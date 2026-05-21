@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain import AgentTaskResult, SessionEvent, TaskRecord, Workspace
@@ -155,6 +157,12 @@ class RunOrchestrator:
             ended=True,
             result_summary=result.summary,
         )
+        transcript_id, transcript_path = await self._record_agent_transcript(
+            run_id=run_id,
+            task_id=task.id,
+            workspace=workspace,
+            claude_session_id=result.claude_session_id,
+        )
         await self._emit_task(
             session_id,
             run_id,
@@ -163,7 +171,19 @@ class RunOrchestrator:
             {
                 "summary": result.summary,
                 "claude_session_id": result.claude_session_id,
+                "transcript_artifact_id": transcript_id,
+                "transcript_path": transcript_path,
             },
+        )
+        handoff_id = await self.store.create_task_handoff(
+            session_id=session_id,
+            run_id=run_id,
+            from_task_id=task.id,
+            status=result.status,
+            summary=result.summary,
+            claude_session_id=result.claude_session_id,
+            next_resume_session_id=result.claude_session_id,
+            transcript_id=transcript_id,
         )
         await self._emit_task(
             session_id,
@@ -175,6 +195,9 @@ class RunOrchestrator:
                 "summary": result.summary,
                 "claude_session_id": result.claude_session_id,
                 "next_resume_session_id": result.claude_session_id,
+                "handoff_id": handoff_id,
+                "transcript_artifact_id": transcript_id,
+                "transcript_path": transcript_path,
             },
         )
         if result.status == "failed":
@@ -221,3 +244,37 @@ class RunOrchestrator:
             payload=payload,
         )
         return event
+
+    async def _record_agent_transcript(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        workspace: Workspace,
+        claude_session_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        if not claude_session_id:
+            return None, None
+        finder = getattr(self.agent, "find_transcript_path", None)
+        if finder is None:
+            return None, None
+        transcript_path = finder(
+            workspace=workspace,
+            claude_session_id=claude_session_id,
+        )
+        if transcript_path is None:
+            return None, None
+        path = Path(transcript_path)
+        if not path.exists():
+            return None, None
+        content = path.read_bytes()
+        transcript_id = await self.store.record_agent_transcript(
+            run_id=run_id,
+            task_id=task_id,
+            provider="claude",
+            provider_session_id=claude_session_id,
+            artifact_path=str(path),
+            checksum=hashlib.sha256(content).hexdigest(),
+            size_bytes=len(content),
+        )
+        return transcript_id, str(path)

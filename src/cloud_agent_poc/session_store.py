@@ -205,6 +205,84 @@ class PostgresSessionStore:
             raise RuntimeError("Postgres did not return the appended event.")
         return SessionEvent(**row)
 
+    async def record_agent_transcript(
+        self,
+        *,
+        run_id: str,
+        task_id: str | None,
+        provider: str,
+        provider_session_id: str,
+        artifact_path: str,
+        checksum: str,
+        size_bytes: int,
+    ) -> str:
+        transcript_id = f"transcript_{uuid4().hex}"
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_transcripts
+                    (id, run_id, task_id, provider, provider_session_id,
+                     artifact_path, checksum, size_bytes)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    transcript_id,
+                    run_id,
+                    task_id,
+                    provider,
+                    provider_session_id,
+                    artifact_path,
+                    checksum,
+                    size_bytes,
+                ),
+            )
+        return transcript_id
+
+    async def create_task_handoff(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        from_task_id: str,
+        to_task_id: str | None = None,
+        status: str,
+        summary: str,
+        claude_session_id: str | None = None,
+        next_resume_session_id: str | None = None,
+        transcript_id: str | None = None,
+    ) -> int:
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO task_handoffs
+                    (session_id, run_id, from_task_id, to_task_id, status,
+                     summary, claude_session_id, next_resume_session_id,
+                     transcript_id)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    session_id,
+                    run_id,
+                    from_task_id,
+                    to_task_id,
+                    status,
+                    summary,
+                    claude_session_id,
+                    next_resume_session_id,
+                    transcript_id,
+                ),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Postgres did not return the created handoff.")
+        return int(row["id"])
+
     async def list_events(
         self,
         session_id: str,

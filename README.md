@@ -6,8 +6,8 @@ layers:
 - Web layer: a prompt UI plus an SSE event timeline.
 - Brain layer: Planner and Task Agents backed by Claude Agent SDK plus SDK MCP
   tools for coding workflows.
-- Session layer: Postgres-backed sessions, runs, tasks, and durable platform
-  events.
+- Session layer: an explicit service owning Postgres-backed sessions, runs,
+  tasks, durable platform events, task handoffs, and agent transcript indexes.
 
 The first supported business flow is intentionally narrow:
 
@@ -22,19 +22,26 @@ The first supported business flow is intentionally narrow:
 ```text
 Browser
   -> Web service
-     -> Postgres queued run + session events
-  -> Brain service claims queued runs
+     -> Session service queued run + session events
+  -> Brain service claims queued runs from Session service
      -> Brain Orchestrator
         -> AgentTaskPlanner through Claude Agent SDK
         -> Claude Agent SDK adapter
         -> GitHubWorkflowService
-     -> Postgres session events
+     -> Session service events + transcript/handoff indexes
+        -> Postgres
+        -> Session artifact volume
 ```
 
 `session_events` is the platform event ledger. Claude SDK output is normalized
 into platform events before it reaches SSE, so the frontend does not depend on
-SDK message shapes. The Web service streams events from Postgres; the Brain
-service does not share in-memory state with Web.
+SDK message shapes. The Web service streams events from the Session service; the
+Brain service does not share in-memory state with Web.
+
+Claude Code writes provider transcripts under `/root/.claude`. In Kubernetes
+that path is mounted from the `session-artifacts` PVC on the Brain pod. The
+Brain process is the physical writer, but the volume is treated as Session
+Layer state and is indexed in Postgres through `agent_transcripts`.
 
 ## V0 Boundaries
 
@@ -85,6 +92,7 @@ Copy the values below into your environment before starting Web and Brain:
 
 ```bash
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ecsma_poc
+export SESSION_LAYER_URL=http://localhost:8002
 export GITHUB_TOKEN=github-token-with-pr-permission
 export ANTHROPIC_API_KEY=anthropic-api-key
 export GITHUB_REPO_URL=https://github.com/lucarunai/demo.git
@@ -96,6 +104,7 @@ Optional settings:
 
 ```bash
 export WORKSPACE_ROOT=/private/tmp/ecsma-poc-workspaces
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export CLAUDE_MODEL=claude-sonnet-4-5
 export GIT_AUTHOR_NAME="Cloud Agent PoC"
 export GIT_AUTHOR_EMAIL=cloud-agent-poc@example.local
@@ -118,9 +127,10 @@ Install dependencies:
 uv sync --extra dev
 ```
 
-Run Web and Brain in separate terminals:
+Run Session, Web, and Brain in separate terminals:
 
 ```bash
+uv run uvicorn cloud_agent_poc.session_app:app --reload --port 8002
 uv run uvicorn cloud_agent_poc.web:app --reload --port 8000
 uv run uvicorn cloud_agent_poc.brain_app:app --reload --port 8001
 ```
@@ -154,6 +164,19 @@ kubectl -n cloud-agent-poc create secret generic cloud-agent-poc-secrets \
 kubectl apply -f k8s/
 ```
 
+Kubernetes creates four application deployments:
+
+```text
+cloud-agent-web
+cloud-agent-session
+cloud-agent-brain
+postgres
+```
+
+Only `cloud-agent-brain` mounts the `session-artifacts` PVC at `/root/.claude`.
+That lets Claude Agent SDK produce transcript JSONL files in a durable artifact
+space while Session Layer remains the logical owner through DB metadata.
+
 Start the Web UI port-forward after deployment:
 
 ```bash
@@ -181,7 +204,8 @@ PYTHONPATH=src python3 -m unittest discover -v
 
 ## Next Iterations
 
-- Persist SDK transcript/session entries for multi-run resume.
+- Restore provider transcripts into a fresh Brain pod before cross-pod resume.
+- Move transcript artifact storage from PVC to object storage when leaving PoC.
 - Replace Postgres polling with a durable queue or notification channel.
 - Add a real sandbox or remote execution hand before accepting arbitrary users.
 - Add checkpoints, artifacts, and structured verification evidence for

@@ -7,14 +7,17 @@
     <style>
       :root {
         color-scheme: light;
-        --bg: #f4f2ec;
-        --panel: #fffdf8;
-        --ink: #1e252b;
-        --muted: #65717a;
-        --line: #d7d0c2;
+        --bg: #eef2f7;
+        --panel: #ffffff;
+        --ink: #17212b;
+        --muted: #667085;
+        --line: #d8dee8;
         --accent: #0f766e;
         --accent-2: #b45309;
         --danger: #b42318;
+        --ok: #166534;
+        --pending: #6b7280;
+        --active: #1d4ed8;
       }
 
       * {
@@ -32,10 +35,15 @@
 
       main {
         display: grid;
-        gap: 20px;
-        grid-template-columns: minmax(280px, 420px) minmax(420px, 1fr);
+        gap: 18px;
+        grid-template-areas:
+          "composer tasks"
+          "events events";
+        grid-template-columns: minmax(680px, 1fr) minmax(360px, 460px);
         min-height: 100vh;
-        padding: 24px;
+        margin: 0 auto;
+        max-width: 1720px;
+        padding: 24px 32px;
       }
 
       section {
@@ -71,6 +79,122 @@
         display: grid;
         gap: 14px;
         align-content: start;
+        grid-area: composer;
+      }
+
+      .tasks-panel {
+        align-content: start;
+        display: grid;
+        gap: 12px;
+        grid-area: tasks;
+      }
+
+      .task-list {
+        display: grid;
+        gap: 8px;
+        list-style: none;
+        margin: 0;
+        max-height: 330px;
+        overflow: auto;
+        padding: 0;
+      }
+
+      .task-item {
+        align-items: center;
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        min-height: 46px;
+        padding: 9px 10px;
+      }
+
+      .task-item.current {
+        background: #eff6ff;
+        border-color: #93c5fd;
+      }
+
+      .task-seq {
+        align-items: center;
+        background: #eef6f4;
+        border-radius: 999px;
+        color: var(--accent);
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 700;
+        height: 28px;
+        justify-content: center;
+        width: 28px;
+      }
+
+      .task-title {
+        font-size: 13px;
+        line-height: 1.35;
+        min-width: 0;
+      }
+
+      .task-badge {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--pending);
+        font-size: 12px;
+        font-weight: 700;
+        padding: 4px 8px;
+        text-transform: capitalize;
+        white-space: nowrap;
+      }
+
+      .task-badge.running {
+        border-color: #bfdbfe;
+        color: var(--active);
+      }
+
+      .task-badge.completed {
+        border-color: #bbf7d0;
+        color: var(--ok);
+      }
+
+      .task-badge.blocked,
+      .task-badge.failed {
+        border-color: #fecaca;
+        color: var(--danger);
+      }
+
+      .task-handoff {
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        grid-column: 1 / -1;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .task-handoff summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 8px 10px;
+      }
+
+      .task-handoff-json {
+        border: 0;
+        border-top: 1px solid var(--line);
+        border-radius: 0;
+        font-size: 12px;
+        max-height: 220px;
+      }
+
+      .empty-task {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 0;
+      }
+
+      .events-panel {
+        grid-area: events;
       }
 
       .meta {
@@ -79,13 +203,32 @@
         overflow-wrap: anywhere;
       }
 
+      .status-strip {
+        display: grid;
+        gap: 6px;
+      }
+
+      .status-line {
+        align-items: baseline;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 54px minmax(0, 1fr);
+      }
+
+      .status-value {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       textarea {
         background: #fff;
         border: 1px solid var(--line);
         border-radius: 8px;
         color: var(--ink);
         font: inherit;
-        min-height: 180px;
+        min-height: 220px;
         padding: 12px;
         resize: vertical;
         width: 100%;
@@ -111,7 +254,7 @@
       .timeline {
         display: grid;
         gap: 12px;
-        max-height: calc(100vh - 48px);
+        max-height: 42vh;
         overflow: auto;
       }
 
@@ -141,7 +284,7 @@
       }
 
       pre {
-        background: #f7f3e9;
+        background: #f8fafc;
         border: 1px solid var(--line);
         border-radius: 8px;
         margin: 0;
@@ -153,6 +296,10 @@
 
       @media (max-width: 860px) {
         main {
+          grid-template-areas:
+            "composer"
+            "tasks"
+            "events";
           grid-template-columns: 1fr;
           padding: 16px;
         }
@@ -168,13 +315,27 @@
       <section class="panel composer">
         <div>
           <h1>Cloud Agent PoC</h1>
-          <p class="meta" id="session">Starting session...</p>
+          <div class="status-strip meta">
+            <div class="status-line">
+              <span>Session</span>
+              <span class="status-value" id="session">Starting session...</span>
+            </div>
+            <div class="status-line">
+              <span>Run</span>
+              <span class="status-value" id="run-status">No run yet.</span>
+            </div>
+          </div>
         </div>
         <textarea id="prompt">Based on https://github.com/lucarunai/demo branch test, build a simple hello world Python application, add tests, and open a pull request to main.</textarea>
         <button id="run" type="button">Run coding agent</button>
-        <p class="meta" id="run-status">No run yet.</p>
       </section>
-      <section class="panel">
+      <section class="panel tasks-panel">
+        <h2>Tasks</h2>
+        <ol class="task-list" id="task-list">
+          <li class="empty-task">Tasks will appear after planning.</li>
+        </ol>
+      </section>
+      <section class="panel events-panel">
         <h2>Session Events</h2>
         <div class="timeline" id="timeline"></div>
       </section>
@@ -184,9 +345,99 @@
       const sessionLabel = document.querySelector("#session");
       const runButton = document.querySelector("#run");
       const runStatus = document.querySelector("#run-status");
+      const taskList = document.querySelector("#task-list");
       const promptInput = document.querySelector("#prompt");
+      const tasks = new Map();
       let sessionId;
       let latestEventId = 0;
+
+      function renderTasks() {
+        taskList.replaceChildren();
+        if (!tasks.size) {
+          const empty = document.createElement("li");
+          empty.className = "empty-task";
+          empty.textContent = "Tasks will appear after planning.";
+          taskList.append(empty);
+          return;
+        }
+        [...tasks.values()]
+          .sort((a, b) => a.seq - b.seq)
+          .forEach((task) => {
+            const item = document.createElement("li");
+            item.className = "task-item";
+            item.dataset.status = task.status;
+            if (task.status === "running") {
+              item.classList.add("current");
+            }
+            item.innerHTML = `
+              <span class="task-seq"></span>
+              <span class="task-title"></span>
+              <span class="task-badge"></span>
+            `;
+            item.querySelector(".task-seq").textContent = task.seq;
+            item.querySelector(".task-title").textContent = task.title;
+            const badge = item.querySelector(".task-badge");
+            badge.textContent = task.status;
+            badge.classList.add(task.status);
+            if (task.handoff) {
+              const handoff = document.createElement("details");
+              handoff.className = "task-handoff";
+              handoff.open = true;
+              const summary = document.createElement("summary");
+              summary.textContent = "Handoff JSON";
+              const json = document.createElement("pre");
+              json.className = "task-handoff-json";
+              json.textContent = JSON.stringify(task.handoff, null, 2);
+              handoff.append(summary, json);
+              item.append(handoff);
+            }
+            taskList.append(item);
+          });
+      }
+
+      function resetTasks() {
+        tasks.clear();
+        renderTasks();
+      }
+
+      function updateTaskFromEvent(event) {
+        if (event.event_type === "tasks.created") {
+          tasks.clear();
+          (event.payload.tasks || []).forEach((task) => {
+            tasks.set(task.id, {
+              id: task.id,
+              seq: task.seq,
+              title: task.title,
+              status: "pending",
+            });
+          });
+          renderTasks();
+          return;
+        }
+
+        if (!event.event_type.startsWith("task.")) {
+          return;
+        }
+
+        const taskId = event.payload.task_id;
+        if (event.event_type === "task.handoff" && !event.payload.status) {
+          return;
+        }
+        const state = event.payload.status || event.event_type.replace("task.", "");
+        const existing = taskId ? tasks.get(taskId) : null;
+        const task = existing || {
+          id: taskId || `${event.payload.seq}-${event.payload.title}`,
+          seq: event.payload.seq || tasks.size + 1,
+          title: event.payload.title || "Task",
+          status: "pending",
+        };
+        task.status = state === "started" ? "running" : state;
+        if (event.event_type === "task.handoff") {
+          task.handoff = event.payload;
+        }
+        tasks.set(task.id, task);
+        renderTasks();
+      }
 
       function addEvent(event) {
         latestEventId = Math.max(latestEventId, event.id || 0);
@@ -207,14 +458,17 @@
         node.scrollIntoView({ block: "end", behavior: "smooth" });
         if (event.event_type.startsWith("run.")) {
           runStatus.textContent = event.event_type;
+          runStatus.title = event.event_type;
         }
+        updateTaskFromEvent(event);
       }
 
       async function createSession() {
         const response = await fetch("/api/sessions", { method: "POST" });
         const data = await response.json();
         sessionId = data.session_id;
-        sessionLabel.textContent = `Session ${sessionId}`;
+        sessionLabel.textContent = sessionId;
+        sessionLabel.title = sessionId;
         connectEvents();
       }
 
@@ -249,19 +503,25 @@
       runButton.addEventListener("click", async () => {
         runButton.disabled = true;
         runStatus.textContent = "Submitting run...";
+        runStatus.title = "Submitting run...";
+        resetTasks();
         const response = await fetch(`/api/sessions/${sessionId}/runs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: promptInput.value }),
         });
         const data = await response.json();
-        runStatus.textContent = response.ok ? `Queued ${data.run_id}` : data.detail;
+        const runText = response.ok ? `Queued ${data.run_id}` : data.detail;
+        runStatus.textContent = runText;
+        runStatus.title = runText;
         runButton.disabled = false;
       });
 
       createSession().catch((error) => {
         sessionLabel.textContent = error.message;
       });
+
+      document.addEventListener("poc:event", (message) => addEvent(message.detail));
     </script>
   </body>
 </html>

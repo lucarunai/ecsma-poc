@@ -67,11 +67,13 @@ class GitHubWorkflowCloneTests(unittest.TestCase):
     def _settings(workspace_root: Path, github_token: str | None) -> Settings:
         return Settings(
             database_url="postgresql://unused",
+            session_layer_url="http://unused",
             github_repo_url="https://github.com/lucarunai/demo.git",
             github_source_branch="test",
             github_target_branch="main",
             github_token=github_token,
             workspace_root=workspace_root,
+            claude_config_dir=workspace_root / ".claude",
             claude_model=None,
             git_author_name="Cloud Agent PoC",
             git_author_email="cloud-agent-poc@example.local",

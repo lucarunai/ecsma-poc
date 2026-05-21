@@ -47,6 +47,32 @@ CREATE TABLE IF NOT EXISTS session_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS agent_transcripts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    provider TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    artifact_path TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS task_handoffs (
+    id BIGSERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    from_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    to_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    status TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    claude_session_id TEXT,
+    next_resume_session_id TEXT,
+    transcript_id TEXT REFERENCES agent_transcripts(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
     ON session_events (session_id, id);
 
@@ -55,3 +81,9 @@ CREATE INDEX IF NOT EXISTS tasks_run_id_seq_idx
 
 CREATE INDEX IF NOT EXISTS runs_status_created_at_idx
     ON runs (status, created_at);
+
+CREATE INDEX IF NOT EXISTS agent_transcripts_run_id_task_id_idx
+    ON agent_transcripts (run_id, task_id);
+
+CREATE INDEX IF NOT EXISTS task_handoffs_run_id_created_at_idx
+    ON task_handoffs (run_id, created_at);

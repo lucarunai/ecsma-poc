@@ -9,6 +9,7 @@ class RecordingStore:
         self.run_updates: list[tuple[str, str, dict]] = []
         self.task_updates: list[tuple[str, str, dict]] = []
         self.events: list[tuple[str, dict]] = []
+        self.handoffs: list[dict] = []
 
     async def update_run(self, run_id: str, status: str, **kwargs) -> None:
         self.run_updates.append((run_id, status, kwargs))
@@ -38,6 +39,10 @@ class RecordingStore:
     async def append_event(self, **kwargs) -> SessionEvent:
         self.events.append((kwargs["event_type"], kwargs["payload"]))
         return None
+
+    async def create_task_handoff(self, **kwargs) -> int:
+        self.handoffs.append(kwargs)
+        return len(self.handoffs)
 
 
 class StaticPlanner:

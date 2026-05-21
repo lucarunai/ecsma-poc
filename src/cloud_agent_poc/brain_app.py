@@ -13,11 +13,11 @@ from .brain.planner import AgentTaskPlanner
 from .brain.sdk_tools import CodingToolServerFactory
 from .brain.worker import BrainWorker
 from .config import Settings
-from .session_store import PostgresSessionStore
+from .session_client import SessionLayerClient
 
 
 settings = Settings.from_env()
-store = PostgresSessionStore(settings.database_url)
+store = SessionLayerClient(settings.session_layer_url)
 github = GitHubWorkflowService(settings)
 orchestrator = RunOrchestrator(
     store=store,
@@ -33,7 +33,6 @@ worker = BrainWorker(store=store, orchestrator=orchestrator)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    await store.initialize_schema()
     stop_event = asyncio.Event()
     worker_task = asyncio.create_task(worker.run_forever(stop_event))
     try:

@@ -5,9 +5,11 @@ metadata:
   namespace: cloud-agent-poc
 data:
   DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ecsma_poc
+  SESSION_LAYER_URL: http://cloud-agent-session:8000
   GITHUB_REPO_URL: https://github.com/lucarunai/demo.git
   GITHUB_SOURCE_BRANCH: test
   GITHUB_TARGET_BRANCH: main
   WORKSPACE_ROOT: /workspaces
+  CLAUDE_CONFIG_DIR: /root/.claude
   GIT_AUTHOR_NAME: Cloud Agent PoC
   GIT_AUTHOR_EMAIL: cloud-agent-poc@example.local

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from ..config import Settings
@@ -126,6 +127,26 @@ class ClaudeCodingAgent:
             raise RuntimeError("Task agent did not return a structured task result.")
         return final_result
 
+    def find_transcript_path(
+        self,
+        *,
+        workspace: Workspace,
+        claude_session_id: str,
+    ) -> Path | None:
+        exact_path = (
+            self.settings.claude_config_dir
+            / "projects"
+            / self._project_key(workspace.path)
+            / f"{claude_session_id}.jsonl"
+        )
+        if exact_path.exists():
+            return exact_path
+        project_root = self.settings.claude_config_dir / "projects"
+        if not project_root.exists():
+            return None
+        matches = sorted(project_root.glob(f"**/{claude_session_id}.jsonl"))
+        return matches[-1] if matches else None
+
     @staticmethod
     def parse_task_result(
         structured_output: dict[str, Any],
@@ -168,6 +189,10 @@ class ClaudeCodingAgent:
                 if key.lower() not in {"token", "authorization", "password"}
             }
         return tool_input
+
+    @staticmethod
+    def _project_key(workspace_path: str) -> str:
+        return workspace_path.replace("/", "-")
 
     @staticmethod
     def _implementation_prompt(prompt: str, task: TaskRecord) -> str:

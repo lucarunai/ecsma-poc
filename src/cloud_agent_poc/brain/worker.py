@@ -20,7 +20,17 @@ class BrainWorker:
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
-            claimed_run = await self.store.claim_next_queued_run()
+            try:
+                claimed_run = await self.store.claim_next_queued_run()
+            except Exception:
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(),
+                        timeout=self.poll_interval_seconds,
+                    )
+                except TimeoutError:
+                    pass
+                continue
             if claimed_run is None:
                 try:
                     await asyncio.wait_for(
