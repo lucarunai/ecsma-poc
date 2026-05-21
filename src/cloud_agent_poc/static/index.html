@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cloud Agent PoC</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f2ec;
+        --panel: #fffdf8;
+        --ink: #1e252b;
+        --muted: #65717a;
+        --line: #d7d0c2;
+        --accent: #0f766e;
+        --accent-2: #b45309;
+        --danger: #b42318;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      main {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: minmax(280px, 420px) minmax(420px, 1fr);
+        min-height: 100vh;
+        padding: 24px;
+      }
+
+      section {
+        min-width: 0;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        font-size: 28px;
+        letter-spacing: 0;
+        margin-bottom: 8px;
+      }
+
+      h2 {
+        font-size: 16px;
+        letter-spacing: 0;
+        margin-bottom: 12px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 18px;
+      }
+
+      .composer {
+        display: grid;
+        gap: 14px;
+        align-content: start;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+
+      textarea {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+        font: inherit;
+        min-height: 180px;
+        padding: 12px;
+        resize: vertical;
+        width: 100%;
+      }
+
+      button {
+        background: var(--accent);
+        border: 0;
+        border-radius: 8px;
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 650;
+        min-height: 44px;
+        padding: 0 14px;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 12px;
+        max-height: calc(100vh - 48px);
+        overflow: auto;
+      }
+
+      .event {
+        border-left: 4px solid var(--accent);
+        padding-left: 12px;
+      }
+
+      .event.tool {
+        border-color: var(--accent-2);
+      }
+
+      .event.fail {
+        border-color: var(--danger);
+      }
+
+      .event header {
+        align-items: baseline;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .event strong {
+        font-size: 14px;
+      }
+
+      pre {
+        background: #f7f3e9;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin: 0;
+        overflow: auto;
+        padding: 10px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      @media (max-width: 860px) {
+        main {
+          grid-template-columns: 1fr;
+          padding: 16px;
+        }
+
+        .timeline {
+          max-height: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel composer">
+        <div>
+          <h1>Cloud Agent PoC</h1>
+          <p class="meta" id="session">Starting session...</p>
+        </div>
+        <textarea id="prompt">Based on https://github.com/lucarunai/demo branch test, build a simple hello world Python application, add tests, and open a pull request to main.</textarea>
+        <button id="run" type="button">Run coding agent</button>
+        <p class="meta" id="run-status">No run yet.</p>
+      </section>
+      <section class="panel">
+        <h2>Session Events</h2>
+        <div class="timeline" id="timeline"></div>
+      </section>
+    </main>
+    <script>
+      const timeline = document.querySelector("#timeline");
+      const sessionLabel = document.querySelector("#session");
+      const runButton = document.querySelector("#run");
+      const runStatus = document.querySelector("#run-status");
+      const promptInput = document.querySelector("#prompt");
+      let sessionId;
+      let latestEventId = 0;
+
+      function addEvent(event) {
+        latestEventId = Math.max(latestEventId, event.id || 0);
+        const node = document.createElement("article");
+        const fail = event.event_type.includes("failed") || event.event_type.includes("blocked");
+        const tool = event.event_type.startsWith("tool");
+        node.className = `event${fail ? " fail" : tool ? " tool" : ""}`;
+        const body = event.payload.text || event.payload.summary || event.payload.error;
+        node.innerHTML = `
+          <header>
+            <strong>${event.event_type}</strong>
+            <span class="meta">#${event.id}</span>
+          </header>
+          <pre></pre>
+        `;
+        node.querySelector("pre").textContent = body || JSON.stringify(event.payload, null, 2);
+        timeline.append(node);
+        node.scrollIntoView({ block: "end", behavior: "smooth" });
+        if (event.event_type.startsWith("run.")) {
+          runStatus.textContent = event.event_type;
+        }
+      }
+
+      async function createSession() {
+        const response = await fetch("/api/sessions", { method: "POST" });
+        const data = await response.json();
+        sessionId = data.session_id;
+        sessionLabel.textContent = `Session ${sessionId}`;
+        connectEvents();
+      }
+
+      function connectEvents() {
+        const stream = new EventSource(
+          `/api/sessions/${sessionId}/events?after_event_id=${latestEventId}`,
+        );
+        stream.onmessage = (message) => addEvent(JSON.parse(message.data));
+        [
+          "session.created",
+          "user.prompt.accepted",
+          "run.started",
+          "plan.started",
+          "tasks.created",
+          "task.started",
+          "task.completed",
+          "task.blocked",
+          "task.failed",
+          "task.handoff",
+          "sdk.message",
+          "agent.message",
+          "agent.result",
+          "tool.started",
+          "run.completed",
+          "run.blocked",
+          "run.failed",
+        ].forEach((eventType) => {
+          stream.addEventListener(eventType, (message) => addEvent(JSON.parse(message.data)));
+        });
+      }
+
+      runButton.addEventListener("click", async () => {
+        runButton.disabled = true;
+        runStatus.textContent = "Submitting run...";
+        const response = await fetch(`/api/sessions/${sessionId}/runs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: promptInput.value }),
+        });
+        const data = await response.json();
+        runStatus.textContent = response.ok ? `Queued ${data.run_id}` : data.detail;
+        runButton.disabled = false;
+      });
+
+      createSession().catch((error) => {
+        sessionLabel.textContent = error.message;
+      });
+    </script>
+  </body>
+</html>

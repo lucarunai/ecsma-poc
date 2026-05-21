@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-agent-brain
+  namespace: cloud-agent-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-agent-brain
+  template:
+    metadata:
+      labels:
+        app: cloud-agent-brain
+    spec:
+      containers:
+        - name: brain
+          image: cloud-agent-poc:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - cloud_agent_poc.brain_app:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          envFrom:
+            - configMapRef:
+                name: cloud-agent-poc-config
+            - secretRef:
+                name: cloud-agent-poc-secrets
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          volumeMounts:
+            - name: workspaces
+              mountPath: /workspaces
+      volumes:
+        - name: workspaces
+          emptyDir: {}
