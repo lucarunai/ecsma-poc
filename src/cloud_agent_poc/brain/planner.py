@@ -23,7 +23,6 @@ class AgentTaskPlanner:
 
         options = ClaudeAgentOptions(
             tools=[],
-            cwd=workspace.path,
             include_partial_messages=False,
             model=self.settings.claude_model,
             max_turns=8,
@@ -122,9 +121,9 @@ User request:
 Planning rules:
 - Include repository, testing, Git, and pull-request tasks when the user asks
   for those outcomes.
-- The implementation agent has Claude Agent SDK file tools and coding MCP tools
-  for cloning GitHub repositories, creating branches, running Python unittest,
-  committing, pushing, and creating pull requests.
+- The implementation agent has controlled coding MCP tools that operate inside
+  a Sandbox Layer for file inspection and edits, GitHub repository operations,
+  Python unittest, commits, pushes, and pull requests.
 - Keep the task list small for this PoC.
 - Each task must be concrete, ordered, and have concise acceptance criteria.
 """.strip()

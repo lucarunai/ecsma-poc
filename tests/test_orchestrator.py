@@ -108,7 +108,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
             store=store,
             planner=StaticPlanner(),
             agent=agent,
-            github=StaticWorkspaceService(),
+            sandbox=StaticWorkspaceService(),
         )
 
         await orchestrator.execute(
@@ -133,7 +133,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
             store=store,
             planner=StaticPlanner(),
             agent=agent,
-            github=StaticWorkspaceService(),
+            sandbox=StaticWorkspaceService(),
         )
 
         await orchestrator.execute(

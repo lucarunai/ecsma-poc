@@ -9,6 +9,7 @@ from pathlib import Path
 class Settings:
     database_url: str
     session_layer_url: str
+    sandbox_layer_url: str
     github_repo_url: str
     github_source_branch: str
     github_target_branch: str
@@ -18,6 +19,12 @@ class Settings:
     claude_model: str | None
     git_author_name: str
     git_author_email: str
+    sandbox_execution_mode: str
+    sandbox_runtime_image: str
+    sandbox_tool_timeout_seconds: int
+    sandbox_workspace_claim: str
+    sandbox_github_secret_name: str
+    sandbox_github_secret_key: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -29,6 +36,10 @@ class Settings:
             session_layer_url=os.getenv(
                 "SESSION_LAYER_URL",
                 "http://localhost:8002",
+            ).rstrip("/"),
+            sandbox_layer_url=os.getenv(
+                "SANDBOX_LAYER_URL",
+                "http://localhost:8003",
             ).rstrip("/"),
             github_repo_url=os.getenv(
                 "GITHUB_REPO_URL",
@@ -48,5 +59,25 @@ class Settings:
             git_author_email=os.getenv(
                 "GIT_AUTHOR_EMAIL",
                 "cloud-agent-poc@example.local",
+            ),
+            sandbox_execution_mode=os.getenv("SANDBOX_EXECUTION_MODE", "direct"),
+            sandbox_runtime_image=os.getenv(
+                "SANDBOX_RUNTIME_IMAGE",
+                "cloud-agent-poc:local",
+            ),
+            sandbox_tool_timeout_seconds=int(
+                os.getenv("SANDBOX_TOOL_TIMEOUT_SECONDS", "180")
+            ),
+            sandbox_workspace_claim=os.getenv(
+                "SANDBOX_WORKSPACE_CLAIM",
+                "sandbox-workspaces",
+            ),
+            sandbox_github_secret_name=os.getenv(
+                "SANDBOX_GITHUB_SECRET_NAME",
+                "cloud-agent-poc-secrets",
+            ),
+            sandbox_github_secret_key=os.getenv(
+                "SANDBOX_GITHUB_SECRET_KEY",
+                "GITHUB_TOKEN",
             ),
         )

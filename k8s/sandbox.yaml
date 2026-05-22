@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sandbox-workspaces
+  namespace: cloud-agent-poc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-agent-sandbox-manager
+  namespace: cloud-agent-poc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloud-agent-sandbox-manager
+  namespace: cloud-agent-poc
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - create
+      - get
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloud-agent-sandbox-manager
+  namespace: cloud-agent-poc
+subjects:
+  - kind: ServiceAccount
+    name: cloud-agent-sandbox-manager
+    namespace: cloud-agent-poc
+roleRef:
+  kind: Role
+  name: cloud-agent-sandbox-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-agent-sandbox
+  namespace: cloud-agent-poc
+spec:
+  selector:
+    app: cloud-agent-sandbox
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-agent-sandbox
+  namespace: cloud-agent-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-agent-sandbox
+  template:
+    metadata:
+      labels:
+        app: cloud-agent-sandbox
+    spec:
+      serviceAccountName: cloud-agent-sandbox-manager
+      containers:
+        - name: sandbox
+          image: cloud-agent-poc:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - cloud_agent_poc.sandbox_app:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          envFrom:
+            - configMapRef:
+                name: cloud-agent-poc-config
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          volumeMounts:
+            - name: sandbox-workspaces
+              mountPath: /sandboxes
+      volumes:
+        - name: sandbox-workspaces
+          persistentVolumeClaim:
+            claimName: sandbox-workspaces

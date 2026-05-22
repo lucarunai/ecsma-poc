@@ -73,6 +73,12 @@ class TaskHandoffCreateRequest(BaseModel):
     transcript_id: str | None = None
 
 
+class ToolExecutionCreateRequest(BaseModel):
+    run_id: str
+    task_id: str | None = None
+    envelope: dict[str, Any]
+
+
 def event_to_dict(event: SessionEvent) -> dict[str, Any]:
     return {
         "id": event.id,
@@ -268,3 +274,13 @@ async def create_task_handoff(body: TaskHandoffCreateRequest) -> dict[str, int]:
         transcript_id=body.transcript_id,
     )
     return {"handoff_id": handoff_id}
+
+
+@app.post("/internal/tool-executions")
+async def record_tool_execution(body: ToolExecutionCreateRequest) -> dict[str, str]:
+    execution_id = await store.record_tool_execution(
+        run_id=body.run_id,
+        task_id=body.task_id,
+        envelope=body.envelope,
+    )
+    return {"execution_id": execution_id}

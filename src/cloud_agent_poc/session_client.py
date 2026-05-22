@@ -191,3 +191,22 @@ class SessionLayerClient:
             )
             response.raise_for_status()
             return int(response.json()["handoff_id"])
+
+    async def record_tool_execution(
+        self,
+        *,
+        run_id: str,
+        task_id: str | None,
+        envelope: dict[str, Any],
+    ) -> str:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                "/internal/tool-executions",
+                json={
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "envelope": envelope,
+                },
+            )
+            response.raise_for_status()
+            return str(response.json()["execution_id"])

@@ -283,6 +283,35 @@ class PostgresSessionStore:
             raise RuntimeError("Postgres did not return the created handoff.")
         return int(row["id"])
 
+    async def record_tool_execution(
+        self,
+        *,
+        run_id: str,
+        task_id: str | None,
+        envelope: dict[str, Any],
+    ) -> str:
+        execution_id = str(envelope["execution_id"])
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                INSERT INTO tool_executions
+                    (execution_id, run_id, task_id, tool_call_id, tool_name,
+                     execution_status, envelope)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    execution_id,
+                    run_id,
+                    task_id,
+                    envelope["tool_call_id"],
+                    envelope["tool_name"],
+                    envelope["execution_status"],
+                    json.dumps(envelope),
+                ),
+            )
+        return execution_id
+
     async def list_events(
         self,
         session_id: str,

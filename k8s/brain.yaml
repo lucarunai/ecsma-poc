@@ -27,8 +27,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: cloud-agent-poc-config
-            - secretRef:
-                name: cloud-agent-poc-secrets
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-agent-poc-secrets
+                  key: ANTHROPIC_API_KEY
           ports:
             - containerPort: 8000
           readinessProbe:
@@ -42,13 +46,9 @@ spec:
               port: 8000
             periodSeconds: 10
           volumeMounts:
-            - name: workspaces
-              mountPath: /workspaces
             - name: session-artifacts
               mountPath: /root/.claude
       volumes:
-        - name: workspaces
-          emptyDir: {}
         - name: session-artifacts
           persistentVolumeClaim:
             claimName: session-artifacts

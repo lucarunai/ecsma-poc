@@ -68,6 +68,7 @@ class GitHubWorkflowCloneTests(unittest.TestCase):
         return Settings(
             database_url="postgresql://unused",
             session_layer_url="http://unused",
+            sandbox_layer_url="http://sandbox",
             github_repo_url="https://github.com/lucarunai/demo.git",
             github_source_branch="test",
             github_target_branch="main",
@@ -77,6 +78,12 @@ class GitHubWorkflowCloneTests(unittest.TestCase):
             claude_model=None,
             git_author_name="Cloud Agent PoC",
             git_author_email="cloud-agent-poc@example.local",
+            sandbox_execution_mode="direct",
+            sandbox_runtime_image="cloud-agent-poc:local",
+            sandbox_tool_timeout_seconds=180,
+            sandbox_workspace_claim="sandbox-workspaces",
+            sandbox_github_secret_name="cloud-agent-poc-secrets",
+            sandbox_github_secret_key="GITHUB_TOKEN",
         )
 
 

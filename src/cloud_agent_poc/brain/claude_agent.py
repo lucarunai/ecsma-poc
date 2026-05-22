@@ -12,8 +12,12 @@ EmitAgentEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class ClaudeCodingAgent:
-    FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"]
     CODING_MCP_TOOLS = [
+        "mcp__coding__read_workspace_file",
+        "mcp__coding__write_workspace_file",
+        "mcp__coding__edit_workspace_file",
+        "mcp__coding__glob_workspace_files",
+        "mcp__coding__grep_workspace_files",
         "mcp__coding__clone_github_repository",
         "mcp__coding__create_git_branch",
         "mcp__coding__git_status",
@@ -31,6 +35,11 @@ class ClaudeCodingAgent:
         "TaskGet",
         "TaskList",
         "TaskUpdate",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
     ]
 
     def __init__(
@@ -46,7 +55,6 @@ class ClaudeCodingAgent:
         *,
         prompt: str,
         task: TaskRecord,
-        workspace: Workspace,
         resume_session_id: str | None = None,
         emit: EmitAgentEvent,
     ) -> AgentTaskResult:
@@ -65,12 +73,11 @@ class ClaudeCodingAgent:
             ) from exc
 
         options = ClaudeAgentOptions(
-            tools=self.FILE_TOOLS,
-            allowed_tools=[*self.FILE_TOOLS, *self.CODING_MCP_TOOLS],
+            tools=[],
+            allowed_tools=self.CODING_MCP_TOOLS,
             disallowed_tools=self.DENIED_TASK_TOOLS,
-            mcp_servers={"coding": self.tool_servers.create(workspace)},
+            mcp_servers={"coding": self.tool_servers.create(task, emit)},
             strict_mcp_config=True,
-            cwd=workspace.path,
             include_partial_messages=False,
             model=self.settings.claude_model,
             output_format={
@@ -215,13 +222,15 @@ Work only inside the current run workspace.
 
 For this V0 workflow:
 - Complete the current planned task while keeping the whole request coherent.
-- Use the coding MCP tools when this task needs repository cloning, branch
-  management, Python unittest execution, commits, pushes, or pull requests.
+- Use the coding MCP tools for every sandbox workspace action: repository
+  cloning, file inspection, file edits, file search, Git branch management,
+  Python unittest execution, commits, pushes, and pull requests.
 - Add or update standard-library unittest coverage when this task needs it.
 - Prefer small files and keep dependencies out unless the repository already
   requires them.
 - Inspect the repository before editing.
-- Use file tools for code edits and keep GitHub credentials out of files.
+- Do not attempt local Brain filesystem actions. Use sandbox workspace tools
+  for code edits and keep GitHub credentials out of files.
 - Return status `completed` only when this task's acceptance criteria are met.
 - Return status `blocked` when a missing prerequisite, missing access, or a
   failed backend tool prevents this task from proceeding. Do not keep retrying

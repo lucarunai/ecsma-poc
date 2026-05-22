@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain import AgentTaskResult, SessionEvent, TaskRecord, Workspace
 from .claude_agent import ClaudeCodingAgent
-from .github_workflow import GitHubWorkflowService
 from .planner import AgentTaskPlanner
 
 if TYPE_CHECKING:
+    from ..sandbox_client import SandboxLayerClient
     from ..session_store import PostgresSessionStore
 
 
@@ -20,12 +20,12 @@ class RunOrchestrator:
         store: PostgresSessionStore,
         planner: AgentTaskPlanner,
         agent: ClaudeCodingAgent,
-        github: GitHubWorkflowService,
+        sandbox: SandboxLayerClient,
     ) -> None:
         self.store = store
         self.planner = planner
         self.agent = agent
-        self.github = github
+        self.sandbox = sandbox
 
     async def execute(self, *, session_id: str, run_id: str, prompt: str) -> None:
         try:
@@ -36,7 +36,7 @@ class RunOrchestrator:
                 event_type="run.started",
                 payload={"run_id": run_id},
             )
-            workspace = await self.github.create_workspace(run_id)
+            workspace = await self.sandbox.create_workspace(run_id)
             await self.store.update_run(
                 run_id,
                 "running",
@@ -146,7 +146,6 @@ class RunOrchestrator:
         result = await self.agent.implement(
             prompt=prompt,
             task=task,
-            workspace=workspace,
             resume_session_id=resume_session_id,
             emit=emit,
         )

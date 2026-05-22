@@ -7,26 +7,26 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from .brain.claude_agent import ClaudeCodingAgent
-from .brain.github_workflow import GitHubWorkflowService
 from .brain.orchestrator import RunOrchestrator
 from .brain.planner import AgentTaskPlanner
 from .brain.sdk_tools import CodingToolServerFactory
 from .brain.worker import BrainWorker
 from .config import Settings
+from .sandbox_client import SandboxLayerClient
 from .session_client import SessionLayerClient
 
 
 settings = Settings.from_env()
 store = SessionLayerClient(settings.session_layer_url)
-github = GitHubWorkflowService(settings)
+sandbox = SandboxLayerClient(settings.sandbox_layer_url)
 orchestrator = RunOrchestrator(
     store=store,
     planner=AgentTaskPlanner(settings),
     agent=ClaudeCodingAgent(
         settings,
-        CodingToolServerFactory(github),
+        CodingToolServerFactory(sandbox, store),
     ),
-    github=github,
+    sandbox=sandbox,
 )
 worker = BrainWorker(store=store, orchestrator=orchestrator)
 

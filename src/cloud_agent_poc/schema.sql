@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tool_executions (
+    execution_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    execution_status TEXT NOT NULL,
+    envelope JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
     ON session_events (session_id, id);
 
@@ -87,3 +98,9 @@ CREATE INDEX IF NOT EXISTS agent_transcripts_run_id_task_id_idx
 
 CREATE INDEX IF NOT EXISTS task_handoffs_run_id_created_at_idx
     ON task_handoffs (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_executions_task_id_created_at_idx
+    ON tool_executions (task_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_executions_run_id_created_at_idx
+    ON tool_executions (run_id, created_at);
