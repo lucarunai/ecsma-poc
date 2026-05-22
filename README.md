@@ -7,8 +7,8 @@ layers:
 - Brain layer: Planner and Task Agents backed by Claude Agent SDK plus SDK MCP
   tool facades for coding workflows.
 - Session layer: an explicit service owning Postgres-backed sessions, runs,
-  tasks, durable platform events, task handoffs, tool executions, and agent
-  transcript indexes.
+  tasks, task attempts, tool calls/executions, durable platform events, task
+  handoffs, and agent transcript indexes.
 - Sandbox layer: a manager service owning run workspaces and launching one-shot
   tool Pods for file, Git, Python test, push, and pull-request operations.
 
@@ -44,9 +44,17 @@ into platform events before it reaches SSE, so the frontend does not depend on
 SDK message shapes. The Web service streams events from the Session service; the
 Brain service does not share in-memory state with Web.
 
-`tool_executions` stores the Sandbox execution envelope for each Brain tool
-call that returns from the Sandbox Manager. A matching `tool.execution` session
-event puts the execution under its Task in the Web UI for early inspection.
+`task_attempts` stores each Task Agent query attempt and captures its active
+Claude session id as soon as the SDK init message arrives. `tool_calls` stores
+Agent-requested tool inputs, while `tool_executions` stores Sandbox attempt
+envelopes that return from the Sandbox Manager. Session events put tool calls,
+Sandbox runtime failures, and task state under the Task list and SSE timeline.
+
+When a tool runtime failure blocks or fails a run, Web calls
+`POST /api/runs/{run_id}/wake`. Wake re-queues the run; Brain reloads existing
+tasks, tool failure context, the durable workspace, and the active Claude session
+id before resuming the current Task Agent. V1 leaves retry decisions to the
+resumed Agent instead of replaying side-effecting tools automatically.
 
 Claude Code writes provider transcripts under `/root/.claude`. In Kubernetes
 that path is mounted from the `session-artifacts` PVC on the Brain pod. The
@@ -66,9 +74,10 @@ mutable checkout.
   arbitrary browser inputs.
 - The model does not receive Claude local file tools. The Brain exposes SDK MCP
   sandbox file tools for workspace inspection and editing.
-- The Brain exposes SDK MCP coding tools that forward GitHub clone, Git branch
-  creation, Python unittest, Git status/diff, commit, push, and pull-request
-  creation into the Sandbox Manager as `run_id + tool_name + tool args`.
+- The Brain exposes SDK MCP coding tools that forward GitHub clone, existing
+  branch checkout, Git branch creation, Python unittest, Git status/diff,
+  commit, push, and pull-request creation into the Sandbox Manager as
+  `run_id + tool_name + tool args`.
 - Tests, commits, pushes, and PR creation are dynamic Agent tasks, not fixed
   platform workflow steps.
 - This PoC launches one-shot Sandbox tool Pods but is not a hardened isolation
@@ -92,6 +101,7 @@ The Brain also registers an in-process SDK MCP server named `coding`:
 
 ```text
 mcp__coding__clone_github_repository
+mcp__coding__checkout_git_branch
 mcp__coding__create_git_branch
 mcp__coding__git_status
 mcp__coding__git_diff_stat

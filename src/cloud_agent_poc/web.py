@@ -69,6 +69,19 @@ async def get_run(run_id: str) -> dict:
     return run
 
 
+@app.post("/api/runs/{run_id}/wake")
+async def wake_run(run_id: str) -> dict:
+    try:
+        return await session_layer.wake_run(run_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {404, 409}:
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=exc.response.json().get("detail", "Run wake failed."),
+            ) from exc
+        raise
+
+
 @app.get("/api/sessions/{session_id}/events")
 async def session_events(
     session_id: str,

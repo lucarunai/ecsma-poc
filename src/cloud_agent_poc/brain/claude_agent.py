@@ -9,6 +9,7 @@ from ..domain import AgentTaskResult, TaskRecord, Workspace
 from .sdk_tools import CodingToolServerFactory
 
 EmitAgentEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
+RecordClaudeSession = Callable[[str], Awaitable[None]]
 
 
 class ClaudeCodingAgent:
@@ -19,6 +20,7 @@ class ClaudeCodingAgent:
         "mcp__coding__glob_workspace_files",
         "mcp__coding__grep_workspace_files",
         "mcp__coding__clone_github_repository",
+        "mcp__coding__checkout_git_branch",
         "mcp__coding__create_git_branch",
         "mcp__coding__git_status",
         "mcp__coding__git_diff_stat",
@@ -55,14 +57,18 @@ class ClaudeCodingAgent:
         *,
         prompt: str,
         task: TaskRecord,
+        task_attempt_id: str,
         resume_session_id: str | None = None,
+        recovery_context: str | None = None,
         emit: EmitAgentEvent,
+        record_claude_session: RecordClaudeSession,
     ) -> AgentTaskResult:
         try:
             from claude_agent_sdk import (
                 AssistantMessage,
                 ClaudeAgentOptions,
                 ResultMessage,
+                SystemMessage,
                 TextBlock,
                 ToolUseBlock,
                 query,
@@ -76,7 +82,9 @@ class ClaudeCodingAgent:
             tools=[],
             allowed_tools=self.CODING_MCP_TOOLS,
             disallowed_tools=self.DENIED_TASK_TOOLS,
-            mcp_servers={"coding": self.tool_servers.create(task, emit)},
+            mcp_servers={
+                "coding": self.tool_servers.create(task, task_attempt_id, emit)
+            },
             strict_mcp_config=True,
             include_partial_messages=False,
             model=self.settings.claude_model,
@@ -93,7 +101,7 @@ class ClaudeCodingAgent:
         final_result: AgentTaskResult | None = None
         claude_session_id = resume_session_id
         async for message in query(
-            prompt=self._implementation_prompt(prompt, task),
+            prompt=self._implementation_prompt(prompt, task, recovery_context),
             options=options,
         ):
             await emit(
@@ -102,6 +110,21 @@ class ClaudeCodingAgent:
                     "message_type": type(message).__name__,
                 },
             )
+            if (
+                isinstance(message, SystemMessage)
+                and message.subtype == "init"
+                and isinstance(message.data, dict)
+                and message.data.get("session_id")
+            ):
+                claude_session_id = str(message.data["session_id"])
+                await record_claude_session(claude_session_id)
+                await emit(
+                    "agent.session.started",
+                    {
+                        "task_attempt_id": task_attempt_id,
+                        "claude_session_id": claude_session_id,
+                    },
+                )
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
@@ -202,7 +225,21 @@ class ClaudeCodingAgent:
         return workspace_path.replace("/", "-")
 
     @staticmethod
-    def _implementation_prompt(prompt: str, task: TaskRecord) -> str:
+    def _implementation_prompt(
+        prompt: str,
+        task: TaskRecord,
+        recovery_context: str | None = None,
+    ) -> str:
+        recovery = ""
+        if recovery_context:
+            recovery = f"""
+
+Recovery context:
+{recovery_context}
+
+Resume the current task from durable workspace state. Inspect current state
+before repeating a side-effecting operation that may have partially completed.
+"""
         return f"""
 You are the implementation agent for a controlled Python coding PoC.
 
@@ -239,6 +276,7 @@ For this V0 workflow:
 - Return status `failed` when the task was attempted and cannot be completed
   safely without a platform fix.
 - Finish with a concise summary of changed files and tests run.
+{recovery}
 """.strip()
 
     @staticmethod

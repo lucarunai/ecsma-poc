@@ -23,6 +23,7 @@ class CodingToolServerFactory:
     def create(
         self,
         task: TaskRecord,
+        task_attempt_id: str,
         emit: EmitToolEvent,
     ) -> Any:
         try:
@@ -48,6 +49,7 @@ class CodingToolServerFactory:
                         emit,
                         "read_workspace_file",
                         {"path": args["path"]},
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(f"Read {args['path']}.", payload)
@@ -72,6 +74,7 @@ class CodingToolServerFactory:
                             "path": args["path"],
                             "content": args["content"],
                         },
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -96,6 +99,7 @@ class CodingToolServerFactory:
                             "old_text": args["old_text"],
                             "new_text": args["new_text"],
                         },
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -116,6 +120,7 @@ class CodingToolServerFactory:
                         emit,
                         "glob_workspace_files",
                         {"pattern": args["pattern"]},
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result("Workspace glob completed.", payload)
@@ -139,6 +144,7 @@ class CodingToolServerFactory:
                             "pattern": args["pattern"],
                             "glob": args["glob"],
                         },
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result("Workspace grep completed.", payload)
@@ -163,6 +169,7 @@ class CodingToolServerFactory:
                             "repository_url": args["repository_url"],
                             "source_branch": args["source_branch"],
                         },
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(
@@ -172,6 +179,31 @@ class CodingToolServerFactory:
                         "source_branch": args["source_branch"],
                         "output": payload["summary"],
                     },
+                )
+            except SandboxLayerError as exc:
+                return self._error(str(exc))
+
+        @tool(
+            "checkout_git_branch",
+            "Fetch and check out an existing Git branch from the repository origin. "
+            "Use this when the user asks to switch to an existing branch.",
+            {"branch_name": str},
+        )
+        async def checkout_git_branch(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                payload = self._data(
+                    await self._execute_tool(
+                        run_id,
+                        task,
+                        emit,
+                        "checkout_git_branch",
+                        {"branch_name": args["branch_name"]},
+                        task_attempt_id=task_attempt_id,
+                    )
+                )
+                return self._result(
+                    "Git branch checked out.",
+                    {"branch_name": args["branch_name"], "output": payload["summary"]},
                 )
             except SandboxLayerError as exc:
                 return self._error(str(exc))
@@ -190,6 +222,7 @@ class CodingToolServerFactory:
                         emit,
                         "create_git_branch",
                         {"branch_name": args["branch_name"]},
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(
@@ -203,7 +236,14 @@ class CodingToolServerFactory:
         async def git_status(_: dict[str, Any]) -> dict[str, Any]:
             try:
                 payload = self._data(
-                    await self._execute_tool(run_id, task, emit, "git_status", {})
+                    await self._execute_tool(
+                        run_id,
+                        task,
+                        emit,
+                        "git_status",
+                        {},
+                        task_attempt_id=task_attempt_id,
+                    )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
             except SandboxLayerError as exc:
@@ -213,7 +253,14 @@ class CodingToolServerFactory:
         async def git_diff_stat(_: dict[str, Any]) -> dict[str, Any]:
             try:
                 payload = self._data(
-                    await self._execute_tool(run_id, task, emit, "git_diff_stat", {})
+                    await self._execute_tool(
+                        run_id,
+                        task,
+                        emit,
+                        "git_diff_stat",
+                        {},
+                        task_attempt_id=task_attempt_id,
+                    )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
             except SandboxLayerError as exc:
@@ -233,6 +280,7 @@ class CodingToolServerFactory:
                     emit,
                     "run_python_unittest",
                     {"start_directory": args["start_directory"]},
+                    task_attempt_id=task_attempt_id,
                     allow_tool_error=True,
                 )
                 payload = self._data(envelope)
@@ -261,6 +309,7 @@ class CodingToolServerFactory:
                         emit,
                         "commit_git_changes",
                         {"commit_message": args["commit_message"]},
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result("Git commit created.", {"output": payload["summary"]})
@@ -281,6 +330,7 @@ class CodingToolServerFactory:
                         emit,
                         "push_current_git_branch",
                         {},
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result("Git branch pushed.", {"output": payload["summary"]})
@@ -305,6 +355,7 @@ class CodingToolServerFactory:
                             "title": args["title"],
                             "body": args["body"],
                         },
+                        task_attempt_id=task_attempt_id,
                     )
                 )
                 return self._result(
@@ -324,6 +375,7 @@ class CodingToolServerFactory:
                 glob_workspace_files,
                 grep_workspace_files,
                 clone_github_repository,
+                checkout_git_branch,
                 create_git_branch,
                 git_status,
                 git_diff_stat,
@@ -342,20 +394,81 @@ class CodingToolServerFactory:
         tool_name: str,
         args: dict[str, Any],
         *,
+        task_attempt_id: str,
         allow_tool_error: bool = False,
     ) -> ToolExecutionEnvelope:
-        envelope = await self.sandbox.execute_tool(run_id, tool_name, args)
+        tool_call_id = await self.store.create_tool_call(
+            run_id=run_id,
+            task_id=task.id,
+            task_attempt_id=task_attempt_id,
+            tool_name=tool_name,
+            tool_input=args,
+        )
+        await emit(
+            "tool.call.requested",
+            {
+                "task_id": task.id,
+                "task_attempt_id": task_attempt_id,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "input": args,
+            },
+        )
+        try:
+            envelope = await self.sandbox.execute_tool(
+                run_id,
+                tool_name,
+                args,
+                tool_call_id=tool_call_id,
+            )
+        except SandboxLayerError:
+            await self.store.update_tool_call(
+                tool_call_id,
+                "failed",
+                failure_kind="sandbox_request_error",
+                ended=True,
+            )
+            await emit(
+                "tool.call.failed",
+                {
+                    "task_id": task.id,
+                    "task_attempt_id": task_attempt_id,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "failure_kind": "sandbox_request_error",
+                },
+            )
+            raise
         serialized = envelope.model_dump(mode="json")
+        failure_kind = (
+            "sandbox_runtime_error"
+            if envelope.execution_status != "succeeded"
+            else "tool_error"
+            if envelope.tool_result and not envelope.tool_result.ok
+            else None
+        )
         await self.store.record_tool_execution(
             run_id=run_id,
             task_id=task.id,
+            task_attempt_id=task_attempt_id,
+            failure_kind=failure_kind,
             envelope=serialized,
+        )
+        call_status = "succeeded" if failure_kind is None else "failed"
+        await self.store.update_tool_call(
+            tool_call_id,
+            call_status,
+            latest_execution_id=envelope.execution_id,
+            failure_kind=failure_kind,
+            ended=True,
         )
         await emit(
             "tool.execution",
             {
                 "task_id": task.id,
+                "task_attempt_id": task_attempt_id,
                 "execution": serialized,
+                "failure_kind": failure_kind,
             },
         )
         if envelope.execution_status != "succeeded":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -32,6 +33,17 @@ async def create_workspace(run_id: str) -> dict[str, str]:
     return {"path": workspace.path}
 
 
+@app.delete("/internal/workspaces/{run_id}")
+async def delete_workspace(run_id: str) -> dict[str, str]:
+    workspace_root = _workspace_path(run_id)
+    if not workspace_root.exists():
+        return {"status": "missing"}
+    if not workspace_root.is_dir():
+        raise HTTPException(status_code=409, detail="Workspace path is not a directory.")
+    shutil.rmtree(workspace_root)
+    return {"status": "deleted"}
+
+
 @app.post("/internal/tool-executions")
 async def execute_tool(request: ToolExecutionRequest) -> ToolExecutionEnvelope:
     workspace_path = _workspace_root(request.run_id)
@@ -42,11 +54,16 @@ async def execute_tool(request: ToolExecutionRequest) -> ToolExecutionEnvelope:
 
 
 def _workspace_root(run_id: str) -> Path:
+    workspace_root = _workspace_path(run_id)
+    if not workspace_root.exists() or not workspace_root.is_dir():
+        raise HTTPException(status_code=404, detail="Sandbox workspace was not found.")
+    return workspace_root
+
+
+def _workspace_path(run_id: str) -> Path:
     _validate_run_id(run_id)
     workspace_root = (settings.workspace_root / run_id).resolve()
     base_root = settings.workspace_root.resolve()
-    if not workspace_root.exists() or not workspace_root.is_dir():
-        raise HTTPException(status_code=404, detail="Sandbox workspace was not found.")
     if base_root not in workspace_root.parents:
         raise HTTPException(status_code=400, detail="Workspace escaped sandbox root.")
     return workspace_root

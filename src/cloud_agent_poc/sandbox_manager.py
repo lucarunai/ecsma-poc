@@ -74,18 +74,26 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
         async with self._client() as client:
             await self._create_pod(client, pod_name, request)
             try:
-                pod = await self._wait_for_pod(client, pod_name)
-                phase = pod.get("status", {}).get("phase", "Unknown")
-                exit_code = _container_exit_code(pod)
-                logs = await self._read_logs(client, pod_name)
-                envelope = _parse_runtime_envelope(logs, request)
-                envelope.runtime = SandboxRuntimeMetadata(
-                    pod_name=pod_name,
-                    pod_phase=phase,
-                    exit_code=exit_code,
-                    duration_ms=_duration_ms(started),
-                )
-                return envelope
+                try:
+                    pod = await self._wait_for_pod(client, pod_name)
+                    phase = pod.get("status", {}).get("phase", "Unknown")
+                    exit_code = _container_exit_code(pod)
+                    logs = await self._read_logs(client, pod_name)
+                    envelope = _parse_runtime_envelope(logs, request)
+                    envelope.runtime = SandboxRuntimeMetadata(
+                        pod_name=pod_name,
+                        pod_phase=phase,
+                        exit_code=exit_code,
+                        duration_ms=_duration_ms(started),
+                    )
+                    return envelope
+                except SandboxManagerError as exc:
+                    return _runtime_failure_envelope(
+                        request,
+                        pod_name=pod_name,
+                        failure_message=str(exc),
+                        duration_ms=_duration_ms(started),
+                    )
             finally:
                 await self._delete_pod(client, pod_name)
 
@@ -249,6 +257,28 @@ def _parse_runtime_envelope(
         tool_name=request.tool_name,
         execution_status="failed",
         failure_message=f"Sandbox runtime did not emit a result: {logs[-1200:]}",
+    )
+
+
+def _runtime_failure_envelope(
+    request: ToolExecutionRequest,
+    *,
+    pod_name: str,
+    failure_message: str,
+    duration_ms: int,
+) -> ToolExecutionEnvelope:
+    return ToolExecutionEnvelope(
+        execution_id=request.execution_id or f"sbxexec_{uuid4().hex}",
+        run_id=request.run_id,
+        tool_call_id=request.tool_call_id,
+        tool_name=request.tool_name,
+        execution_status="failed",
+        failure_message=failure_message,
+        runtime=SandboxRuntimeMetadata(
+            pod_name=pod_name,
+            pod_phase="Unknown",
+            duration_ms=duration_ms,
+        ),
     )
 
 

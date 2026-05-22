@@ -25,6 +25,17 @@ class TaskRecord:
 
 
 @dataclass(frozen=True)
+class TaskAttemptRecord:
+    id: str
+    run_id: str
+    task_id: str
+    attempt_no: int
+    status: str
+    claude_session_id: str | None = None
+    resume_from_session_id: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentTaskResult:
     status: str
     summary: str

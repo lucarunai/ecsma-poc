@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from cloud_agent_poc.config import Settings
-from cloud_agent_poc.sandbox_manager import KubernetesToolPodRunner
+from cloud_agent_poc.sandbox_manager import KubernetesToolPodRunner, SandboxManagerError
 from cloud_agent_poc.sandbox_protocol import ToolExecutionRequest
 from cloud_agent_poc.sandbox_runtime import execute_runtime_request
 
@@ -97,6 +97,55 @@ class SandboxPodManifestTests(unittest.TestCase):
             workspace_env["SANDBOX_WORKSPACE_PATH"],
             "/workspace/run_0123456789abcdef0123456789abcdef",
         )
+
+
+class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_kubernetes_runner_returns_failed_envelope_when_pod_disappears(self) -> None:
+        class DummyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+        runner.namespace = "cloud-agent-poc"
+        runner._client = lambda: DummyClient()
+
+        deleted_pods = []
+
+        async def create_pod(_client, _pod_name, _request):
+            return None
+
+        async def wait_for_pod(_client, pod_name):
+            raise SandboxManagerError(
+                f'Sandbox Pod lookup failed with HTTP 404: pods "{pod_name}" not found'
+            )
+
+        async def delete_pod(_client, pod_name):
+            deleted_pods.append(pod_name)
+
+        runner._create_pod = create_pod
+        runner._wait_for_pod = wait_for_pod
+        runner._delete_pod = delete_pod
+
+        request = ToolExecutionRequest(
+            run_id="run_0123456789abcdef0123456789abcdef",
+            tool_call_id="toolcall_crash",
+            tool_name="run_python_unittest",
+            args={"start_directory": "."},
+            execution_id="sbxexec_crash",
+        )
+
+        envelope = await runner.execute(request, workspace_path=Path("/sandboxes"))
+
+        self.assertEqual(envelope.execution_status, "failed")
+        self.assertEqual(envelope.execution_id, "sbxexec_crash")
+        self.assertEqual(envelope.runtime.pod_name, "sandbox-tool-crash")
+        self.assertEqual(envelope.runtime.pod_phase, "Unknown")
+        self.assertIn("HTTP 404", envelope.failure_message or "")
+        self.assertEqual(deleted_pods, ["sandbox-tool-crash"])
 
 
 def _settings(workspace_root: Path) -> Settings:

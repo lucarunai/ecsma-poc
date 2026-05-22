@@ -21,6 +21,9 @@ class SandboxLayerClient:
         payload = await self._request("POST", f"/internal/workspaces/{run_id}")
         return Workspace(path=str(payload["path"]))
 
+    async def delete_workspace(self, run_id: str) -> dict[str, Any]:
+        return await self._request("DELETE", f"/internal/workspaces/{run_id}")
+
     async def read_file(self, run_id: str, path: str) -> dict[str, Any]:
         return await self._execute_tool_data(
             run_id,
@@ -94,6 +97,13 @@ class SandboxLayerClient:
             {"branch_name": branch_name},
         )
 
+    async def checkout_branch(self, run_id: str, branch_name: str) -> dict[str, Any]:
+        return await self._execute_tool_data(
+            run_id,
+            "checkout_git_branch",
+            {"branch_name": branch_name},
+        )
+
     async def git_status(self, run_id: str) -> dict[str, Any]:
         return await self._execute_tool_data(run_id, "git_status", {})
 
@@ -149,13 +159,15 @@ class SandboxLayerClient:
         run_id: str,
         tool_name: str,
         args: dict[str, Any],
+        *,
+        tool_call_id: str | None = None,
     ) -> ToolExecutionEnvelope:
         payload = await self._request(
             "POST",
             "/internal/tool-executions",
             json={
                 "run_id": run_id,
-                "tool_call_id": f"toolcall_{uuid4().hex}",
+                "tool_call_id": tool_call_id or f"toolcall_{uuid4().hex}",
                 "tool_name": tool_name,
                 "args": args,
             },

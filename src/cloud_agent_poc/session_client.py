@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .domain import PlannedTask, RunRecord, SessionEvent, TaskRecord
+from .domain import PlannedTask, RunRecord, SessionEvent, TaskAttemptRecord, TaskRecord
 
 
 class SessionLayerClient:
@@ -32,6 +32,12 @@ class SessionLayerClient:
             response = await client.get(f"/api/runs/{run_id}")
             if response.status_code == 404:
                 return None
+            response.raise_for_status()
+            return response.json()
+
+    async def wake_run(self, run_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(f"/api/runs/{run_id}/wake")
             response.raise_for_status()
             return response.json()
 
@@ -105,6 +111,89 @@ class SessionLayerClient:
                     "started": started,
                     "ended": ended,
                     "result_summary": result_summary,
+                },
+            )
+            response.raise_for_status()
+
+    async def create_task_attempt(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        resume_from_session_id: str | None,
+    ) -> TaskAttemptRecord:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                f"/internal/tasks/{task_id}/attempts",
+                json={
+                    "run_id": run_id,
+                    "resume_from_session_id": resume_from_session_id,
+                },
+            )
+            response.raise_for_status()
+            return TaskAttemptRecord(**response.json())
+
+    async def update_task_attempt(
+        self,
+        attempt_id: str,
+        status: str,
+        *,
+        claude_session_id: str | None = None,
+        failure_reason: str | None = None,
+        ended: bool = False,
+    ) -> None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.patch(
+                f"/internal/task-attempts/{attempt_id}",
+                json={
+                    "status": status,
+                    "claude_session_id": claude_session_id,
+                    "failure_reason": failure_reason,
+                    "ended": ended,
+                },
+            )
+            response.raise_for_status()
+
+    async def create_tool_call(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        task_attempt_id: str | None,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> str:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                "/internal/tool-calls",
+                json={
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "task_attempt_id": task_attempt_id,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                },
+            )
+            response.raise_for_status()
+            return str(response.json()["tool_call_id"])
+
+    async def update_tool_call(
+        self,
+        tool_call_id: str,
+        status: str,
+        *,
+        latest_execution_id: str | None = None,
+        failure_kind: str | None = None,
+        ended: bool = False,
+    ) -> None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.patch(
+                f"/internal/tool-calls/{tool_call_id}",
+                json={
+                    "status": status,
+                    "latest_execution_id": latest_execution_id,
+                    "failure_kind": failure_kind,
+                    "ended": ended,
                 },
             )
             response.raise_for_status()
@@ -197,6 +286,8 @@ class SessionLayerClient:
         *,
         run_id: str,
         task_id: str | None,
+        task_attempt_id: str | None,
+        failure_kind: str | None,
         envelope: dict[str, Any],
     ) -> str:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
@@ -205,8 +296,18 @@ class SessionLayerClient:
                 json={
                     "run_id": run_id,
                     "task_id": task_id,
+                    "task_attempt_id": task_attempt_id,
+                    "failure_kind": failure_kind,
                     "envelope": envelope,
                 },
             )
             response.raise_for_status()
             return str(response.json()["execution_id"])
+
+    async def get_run_recovery_bundle(self, run_id: str) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(f"/internal/runs/{run_id}/recovery-bundle")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()

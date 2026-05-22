@@ -8,7 +8,7 @@ from uuid import uuid4
 import psycopg
 from psycopg.rows import dict_row
 
-from .domain import PlannedTask, RunRecord, SessionEvent, TaskRecord
+from .domain import PlannedTask, RunRecord, SessionEvent, TaskAttemptRecord, TaskRecord
 
 
 class PostgresSessionStore:
@@ -70,7 +70,7 @@ class PostgresSessionStore:
                     WITH next_run AS (
                         SELECT id
                         FROM runs
-                        WHERE status = 'queued'
+                        WHERE status IN ('queued', 'resume_queued')
                         ORDER BY created_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
@@ -175,6 +175,205 @@ class PostgresSessionStore:
                 """,
                 (status, result_summary, started, ended, task_id),
             )
+
+    async def get_tasks(self, run_id: str) -> list[TaskRecord]:
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, run_id, seq, kind, title, description,
+                       acceptance_criteria, status
+                FROM tasks
+                WHERE run_id = %s
+                ORDER BY seq ASC
+                """,
+                (run_id,),
+            )
+            rows = await cursor.fetchall()
+        return [TaskRecord(**row) for row in rows]
+
+    async def create_task_attempt(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        resume_from_session_id: str | None,
+    ) -> TaskAttemptRecord:
+        attempt_id = f"taskattempt_{uuid4().hex}"
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO task_attempts
+                    (id, run_id, task_id, attempt_no, status, resume_from_session_id)
+                SELECT %s, %s, %s, COALESCE(MAX(attempt_no), 0) + 1, 'running', %s
+                FROM task_attempts
+                WHERE task_id = %s
+                RETURNING id, run_id, task_id, attempt_no, status,
+                          claude_session_id, resume_from_session_id
+                """,
+                (attempt_id, run_id, task_id, resume_from_session_id, task_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Postgres did not return the created task attempt.")
+        return TaskAttemptRecord(**row)
+
+    async def update_task_attempt(
+        self,
+        attempt_id: str,
+        status: str,
+        *,
+        claude_session_id: str | None = None,
+        failure_reason: str | None = None,
+        ended: bool = False,
+    ) -> None:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                UPDATE task_attempts
+                SET status = %s,
+                    claude_session_id = COALESCE(%s, claude_session_id),
+                    failure_reason = COALESCE(%s, failure_reason),
+                    ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END
+                WHERE id = %s
+                """,
+                (status, claude_session_id, failure_reason, ended, attempt_id),
+            )
+
+    async def create_tool_call(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        task_attempt_id: str | None,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> str:
+        tool_call_id = f"toolcall_{uuid4().hex}"
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                INSERT INTO tool_calls
+                    (id, run_id, task_id, task_attempt_id, tool_name, input, status)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s::jsonb, 'requested')
+                """,
+                (
+                    tool_call_id,
+                    run_id,
+                    task_id,
+                    task_attempt_id,
+                    tool_name,
+                    json.dumps(tool_input),
+                ),
+            )
+        return tool_call_id
+
+    async def update_tool_call(
+        self,
+        tool_call_id: str,
+        status: str,
+        *,
+        latest_execution_id: str | None = None,
+        failure_kind: str | None = None,
+        ended: bool = False,
+    ) -> None:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                UPDATE tool_calls
+                SET status = %s,
+                    latest_execution_id = COALESCE(%s, latest_execution_id),
+                    failure_kind = COALESCE(%s, failure_kind),
+                    ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END
+                WHERE id = %s
+                """,
+                (status, latest_execution_id, failure_kind, ended, tool_call_id),
+            )
+
+    async def wake_run(self, run_id: str) -> dict[str, Any] | None:
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'resume_queued',
+                        ended_at = NULL,
+                        error_message = NULL
+                    WHERE id = %s
+                      AND status IN ('blocked', 'failed')
+                    RETURNING id, session_id, prompt, status
+                    """,
+                    (run_id,),
+                )
+                run = await cursor.fetchone()
+                if run is None:
+                    return None
+                await conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'resume_queued',
+                        ended_at = NULL
+                    WHERE id = (
+                        SELECT id
+                        FROM tasks
+                        WHERE run_id = %s
+                          AND status IN ('blocked', 'failed', 'running')
+                        ORDER BY seq ASC
+                        LIMIT 1
+                    )
+                    """,
+                    (run_id,),
+                )
+        return run
+
+    async def get_run_recovery_bundle(self, run_id: str) -> dict[str, Any] | None:
+        run = await self.get_run(run_id)
+        if run is None:
+            return None
+        tasks = await self.get_tasks(run_id)
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            attempt_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, attempt_no, status, claude_session_id,
+                       resume_from_session_id, failure_reason
+                FROM task_attempts
+                WHERE run_id = %s
+                ORDER BY created_at DESC
+                LIMIT 8
+                """,
+                (run_id,),
+            )
+            tool_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, task_attempt_id, tool_name, input,
+                       status, latest_execution_id, failure_kind, created_at
+                FROM tool_calls
+                WHERE run_id = %s
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                (run_id,),
+            )
+            attempts = await attempt_cursor.fetchall()
+            tool_calls = await tool_cursor.fetchall()
+        return {
+            "run": run,
+            "tasks": [task.__dict__ for task in tasks],
+            "task_attempts": attempts,
+            "tool_calls": tool_calls,
+        }
 
     async def append_event(
         self,
@@ -288,6 +487,8 @@ class PostgresSessionStore:
         *,
         run_id: str,
         task_id: str | None,
+        task_attempt_id: str | None,
+        failure_kind: str | None,
         envelope: dict[str, Any],
     ) -> str:
         execution_id = str(envelope["execution_id"])
@@ -295,18 +496,20 @@ class PostgresSessionStore:
             await conn.execute(
                 """
                 INSERT INTO tool_executions
-                    (execution_id, run_id, task_id, tool_call_id, tool_name,
-                     execution_status, envelope)
+                    (execution_id, run_id, task_id, task_attempt_id, tool_call_id,
+                     tool_name, execution_status, failure_kind, envelope)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
                 (
                     execution_id,
                     run_id,
                     task_id,
+                    task_attempt_id,
                     envelope["tool_call_id"],
                     envelope["tool_name"],
                     envelope["execution_status"],
+                    failure_kind,
                     json.dumps(envelope),
                 ),
             )

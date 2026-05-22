@@ -87,5 +87,41 @@ class GitHubWorkflowCloneTests(unittest.TestCase):
         )
 
 
+class GitHubWorkflowCheckoutTests(unittest.TestCase):
+    def test_checkout_fetches_existing_branch_before_switching(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = GitHubWorkflowService(
+                GitHubWorkflowCloneTests._settings(Path(temp_dir), "secret-token")
+            )
+            with patch(
+                "cloud_agent_poc.brain.github_workflow.run_command",
+                new=AsyncMock(
+                    side_effect=[
+                        CommandResult(["git"], 0, "fetched", ""),
+                        CommandResult(["git"], 0, "checked out", ""),
+                    ]
+                ),
+            ) as run_command:
+                asyncio.run(
+                    service.checkout_branch(
+                        workspace=Workspace(path=temp_dir),
+                        branch_name="test",
+                    )
+                )
+
+        fetch_command = run_command.await_args_list[0].args[0]
+        checkout_command = run_command.await_args_list[1].args[0]
+        self.assertEqual(fetch_command[:2], ["git", "-c"])
+        self.assertIn("extraheader=AUTHORIZATION: basic ", fetch_command[2])
+        self.assertEqual(
+            fetch_command[3:],
+            ["fetch", "origin", "refs/heads/test:refs/remotes/origin/test"],
+        )
+        self.assertEqual(
+            checkout_command,
+            ["git", "checkout", "-B", "test", "origin/test"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

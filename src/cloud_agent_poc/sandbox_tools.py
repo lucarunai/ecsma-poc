@@ -18,6 +18,7 @@ TOOL_NAMES = {
     "glob_workspace_files",
     "grep_workspace_files",
     "clone_github_repository",
+    "checkout_git_branch",
     "create_git_branch",
     "git_status",
     "git_diff_stat",
@@ -29,6 +30,7 @@ TOOL_NAMES = {
 
 GITHUB_SECRET_TOOLS = {
     "clone_github_repository",
+    "checkout_git_branch",
     "push_current_git_branch",
     "create_github_pull_request",
 }
@@ -167,6 +169,14 @@ async def _dispatch(
             branch_name=branch_name,
         )
         return _command_ok("Git branch created.", result, branch_name=branch_name)
+
+    if request.tool_name == "checkout_git_branch":
+        branch_name = _required_string(args, "branch_name")
+        result = await github.checkout_branch(
+            workspace=workspace,
+            branch_name=branch_name,
+        )
+        return _command_ok("Git branch checked out.", result, branch_name=branch_name)
 
     if request.tool_name == "git_status":
         return _command_ok("Git status read.", await github.status(workspace))

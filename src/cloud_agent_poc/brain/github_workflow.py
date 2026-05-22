@@ -84,6 +84,35 @@ class GitHubWorkflowService:
         self._ensure_success(result, "git checkout")
         return result
 
+    async def checkout_branch(
+        self,
+        *,
+        workspace: Workspace,
+        branch_name: str,
+    ) -> CommandResult:
+        self._validate_branch_name(branch_name)
+        workspace_path = Path(workspace.path)
+        fetch_command = ["git"]
+        auth_header = self._github_auth_header()
+        if auth_header:
+            fetch_command.extend(["-c", auth_header])
+        fetch_command.extend(
+            [
+                "fetch",
+                "origin",
+                f"refs/heads/{branch_name}:refs/remotes/origin/{branch_name}",
+            ]
+        )
+        fetch = await run_command(fetch_command, cwd=workspace_path)
+        self._ensure_success(fetch, "git fetch")
+
+        checkout = await run_command(
+            ["git", "checkout", "-B", branch_name, f"origin/{branch_name}"],
+            cwd=workspace_path,
+        )
+        self._ensure_success(checkout, "git checkout")
+        return checkout
+
     async def status(self, workspace: Workspace) -> CommandResult:
         result = await run_command(
             ["git", "status", "--short", "--branch"],

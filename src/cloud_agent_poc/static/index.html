@@ -39,10 +39,10 @@
         grid-template-areas:
           "composer tasks"
           "events events";
-        grid-template-columns: minmax(680px, 1fr) minmax(360px, 460px);
+        grid-template-columns: minmax(560px, 1fr) minmax(540px, 690px);
         min-height: 100vh;
         margin: 0 auto;
-        max-width: 1720px;
+        max-width: 1880px;
         padding: 24px 32px;
       }
 
@@ -87,6 +87,7 @@
         display: grid;
         gap: 12px;
         grid-area: tasks;
+        min-height: 0;
       }
 
       .task-list {
@@ -94,8 +95,8 @@
         gap: 8px;
         list-style: none;
         margin: 0;
-        max-height: 330px;
-        overflow: auto;
+        min-height: 0;
+        overflow: visible;
         padding: 0;
       }
 
@@ -187,6 +188,81 @@
         max-height: 220px;
       }
 
+      .task-tools {
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 7px;
+        grid-column: 1 / -1;
+        max-height: min(390px, 42vh);
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 9px 10px 0 0;
+        scrollbar-gutter: stable;
+      }
+
+      .task-tools::-webkit-scrollbar {
+        width: 14px;
+      }
+
+      .task-tools::-webkit-scrollbar-track {
+        background: #edf2f7;
+        border-radius: 999px;
+      }
+
+      .task-tools::-webkit-scrollbar-thumb {
+        background: #9aa7b8;
+        border: 3px solid #edf2f7;
+        border-radius: 999px;
+      }
+
+      .tool-call {
+        background: #ffffff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+        padding: 8px 9px;
+      }
+
+      .tool-line {
+        align-items: center;
+        display: grid;
+        gap: 7px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .tool-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .tool-status {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .tool-status.failed {
+        color: var(--danger);
+      }
+
+      .tool-status.succeeded {
+        color: var(--ok);
+      }
+
+      .tool-runtime {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+
       .empty-task {
         color: var(--muted);
         font-size: 13px;
@@ -251,6 +327,20 @@
         opacity: 0.6;
       }
 
+      .run-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .wake-button {
+        background: var(--accent-2);
+      }
+
+      .wake-button[hidden] {
+        display: none;
+      }
+
       .timeline {
         display: grid;
         gap: 12px;
@@ -294,7 +384,7 @@
         word-break: break-word;
       }
 
-      @media (max-width: 860px) {
+      @media (max-width: 1180px) {
         main {
           grid-template-areas:
             "composer"
@@ -306,6 +396,10 @@
 
         .timeline {
           max-height: none;
+        }
+
+        .task-tools {
+          max-height: min(390px, 48vh);
         }
       }
     </style>
@@ -327,7 +421,10 @@
           </div>
         </div>
         <textarea id="prompt">Based on https://github.com/lucarunai/demo branch test, build a simple hello world Python application, add tests, and open a pull request to main.</textarea>
-        <button id="run" type="button">Run coding agent</button>
+        <div class="run-actions">
+          <button id="run" type="button">Run agent</button>
+          <button class="wake-button" id="wake" type="button" hidden>Wake run</button>
+        </div>
       </section>
       <section class="panel tasks-panel">
         <h2>Tasks</h2>
@@ -344,11 +441,13 @@
       const timeline = document.querySelector("#timeline");
       const sessionLabel = document.querySelector("#session");
       const runButton = document.querySelector("#run");
+      const wakeButton = document.querySelector("#wake");
       const runStatus = document.querySelector("#run-status");
       const taskList = document.querySelector("#task-list");
       const promptInput = document.querySelector("#prompt");
       const tasks = new Map();
       let sessionId;
+      let currentRunId;
       let latestEventId = 0;
 
       function renderTasks() {
@@ -379,10 +478,43 @@
             const badge = item.querySelector(".task-badge");
             badge.textContent = task.status;
             badge.classList.add(task.status);
+            if (task.tools && task.tools.size) {
+              const toolList = document.createElement("div");
+              toolList.className = "task-tools";
+              [...task.tools.values()].forEach((tool) => {
+                const execution = tool.execution || {};
+                const runtime = execution.runtime || {};
+                const toolItem = document.createElement("div");
+                toolItem.className = "tool-call";
+                toolItem.innerHTML = `
+                  <div class="tool-line">
+                    <span class="tool-name"></span>
+                    <span class="tool-status"></span>
+                  </div>
+                  <div class="tool-runtime"></div>
+                `;
+                toolItem.querySelector(".tool-name").textContent = tool.tool_name;
+                const toolStatus = toolItem.querySelector(".tool-status");
+                toolStatus.textContent = tool.status;
+                toolStatus.classList.add(tool.status);
+                const runtimeText = [
+                  tool.failure_kind ? `failure ${tool.failure_kind}` : null,
+                  runtime.pod_name ? `pod ${runtime.pod_name}` : null,
+                  runtime.pod_phase ? `phase ${runtime.pod_phase}` : null,
+                  runtime.exit_code !== null && runtime.exit_code !== undefined
+                    ? `exit ${runtime.exit_code}`
+                    : null,
+                  execution.execution_id ? `execution ${execution.execution_id}` : null,
+                ].filter(Boolean).join(" | ");
+                toolItem.querySelector(".tool-runtime").textContent =
+                  runtimeText || tool.tool_call_id;
+                toolList.append(toolItem);
+              });
+              item.append(toolList);
+            }
             if (task.handoff) {
               const handoff = document.createElement("details");
               handoff.className = "task-handoff";
-              handoff.open = true;
               const summary = document.createElement("summary");
               summary.textContent = "Handoff JSON";
               const json = document.createElement("pre");
@@ -397,6 +529,7 @@
 
       function resetTasks() {
         tasks.clear();
+        wakeButton.hidden = true;
         renderTasks();
       }
 
@@ -409,6 +542,7 @@
               seq: task.seq,
               title: task.title,
               status: "pending",
+              tools: new Map(),
             });
           });
           renderTasks();
@@ -430,12 +564,52 @@
           seq: event.payload.seq || tasks.size + 1,
           title: event.payload.title || "Task",
           status: "pending",
+          tools: new Map(),
         };
         task.status = state === "started" ? "running" : state;
         if (event.event_type === "task.handoff") {
           task.handoff = event.payload;
         }
         tasks.set(task.id, task);
+        renderTasks();
+      }
+
+      function updateToolFromEvent(event) {
+        if (!event.event_type.startsWith("tool.")) {
+          return;
+        }
+        const taskId = event.payload.task_id;
+        const toolCallId =
+          event.payload.tool_call_id ||
+          (event.payload.execution && event.payload.execution.tool_call_id);
+        if (!taskId || !toolCallId) {
+          return;
+        }
+        const task = tasks.get(taskId);
+        if (!task) {
+          return;
+        }
+        task.tools = task.tools || new Map();
+        const execution = event.payload.execution;
+        const existing = task.tools.get(toolCallId) || {
+          tool_call_id: toolCallId,
+          tool_name: event.payload.tool_name || (execution && execution.tool_name) || "tool",
+          status: "requested",
+        };
+        if (event.event_type === "tool.call.failed") {
+          existing.status = "failed";
+          existing.failure_kind = event.payload.failure_kind;
+        }
+        if (event.event_type === "tool.execution" && execution) {
+          existing.tool_name = execution.tool_name;
+          existing.execution = execution;
+          existing.failure_kind = event.payload.failure_kind;
+          existing.status =
+            execution.execution_status === "succeeded" && !event.payload.failure_kind
+              ? "succeeded"
+              : "failed";
+        }
+        task.tools.set(toolCallId, existing);
         renderTasks();
       }
 
@@ -459,8 +633,14 @@
         if (event.event_type.startsWith("run.")) {
           runStatus.textContent = event.event_type;
           runStatus.title = event.event_type;
+          currentRunId = event.payload.run_id || currentRunId;
+          wakeButton.hidden = !["run.blocked", "run.failed"].includes(event.event_type);
+        }
+        if (event.event_type === "user.prompt.accepted") {
+          currentRunId = event.payload.run_id;
         }
         updateTaskFromEvent(event);
+        updateToolFromEvent(event);
       }
 
       async function createSession() {
@@ -481,6 +661,8 @@
           "session.created",
           "user.prompt.accepted",
           "run.started",
+          "run.resumed",
+          "run.wake.requested",
           "plan.started",
           "tasks.created",
           "task.started",
@@ -491,7 +673,10 @@
           "sdk.message",
           "agent.message",
           "agent.result",
+          "agent.session.started",
           "tool.started",
+          "tool.call.requested",
+          "tool.call.failed",
           "tool.execution",
           "run.completed",
           "run.blocked",
@@ -513,9 +698,26 @@
         });
         const data = await response.json();
         const runText = response.ok ? `Queued ${data.run_id}` : data.detail;
+        currentRunId = data.run_id || currentRunId;
         runStatus.textContent = runText;
         runStatus.title = runText;
         runButton.disabled = false;
+      });
+
+      wakeButton.addEventListener("click", async () => {
+        if (!currentRunId) {
+          return;
+        }
+        wakeButton.disabled = true;
+        const response = await fetch(`/api/runs/${currentRunId}/wake`, {
+          method: "POST",
+        });
+        const data = await response.json();
+        const wakeText = response.ok ? `Waking ${data.run_id}` : data.detail;
+        runStatus.textContent = wakeText;
+        runStatus.title = wakeText;
+        wakeButton.hidden = response.ok;
+        wakeButton.disabled = false;
       });
 
       createSession().catch((error) => {

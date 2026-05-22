@@ -73,16 +73,54 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS task_attempts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt_no INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    claude_session_id TEXT,
+    resume_from_session_id TEXT,
+    failure_reason TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (task_id, attempt_no)
+);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    tool_name TEXT NOT NULL,
+    input JSONB NOT NULL,
+    status TEXT NOT NULL,
+    latest_execution_id TEXT,
+    failure_kind TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS tool_executions (
     execution_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
     tool_call_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     execution_status TEXT NOT NULL,
+    failure_kind TEXT,
     envelope JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tool_executions
+    ADD COLUMN IF NOT EXISTS task_attempt_id TEXT
+    REFERENCES task_attempts(id) ON DELETE SET NULL;
+
+ALTER TABLE tool_executions
+    ADD COLUMN IF NOT EXISTS failure_kind TEXT;
 
 CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
     ON session_events (session_id, id);
@@ -98,6 +136,18 @@ CREATE INDEX IF NOT EXISTS agent_transcripts_run_id_task_id_idx
 
 CREATE INDEX IF NOT EXISTS task_handoffs_run_id_created_at_idx
     ON task_handoffs (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS task_attempts_task_id_attempt_no_idx
+    ON task_attempts (task_id, attempt_no DESC);
+
+CREATE INDEX IF NOT EXISTS task_attempts_run_id_created_at_idx
+    ON task_attempts (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_calls_task_id_created_at_idx
+    ON tool_calls (task_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_calls_run_id_created_at_idx
+    ON tool_calls (run_id, created_at);
 
 CREATE INDEX IF NOT EXISTS tool_executions_task_id_created_at_idx
     ON tool_executions (task_id, created_at);
