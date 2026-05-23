@@ -60,6 +60,7 @@ class ClaudeCodingAgent:
         task: TaskRecord,
         task_attempt_id: str,
         handoffs: list[dict[str, Any]] | None = None,
+        run_acceptance_criteria: list[dict[str, Any]] | None = None,
         recovery_context: str | None = None,
         emit: EmitAgentEvent,
         record_claude_session: RecordClaudeSession,
@@ -106,6 +107,7 @@ class ClaudeCodingAgent:
                 prompt,
                 task,
                 handoffs or [],
+                run_acceptance_criteria or [],
                 recovery_context,
             ),
             options=options,
@@ -208,7 +210,7 @@ class ClaudeCodingAgent:
             task.acceptance_criteria if task is not None else None,
         )
         if status == "completed" and any(
-            result["status"] != "passing" for result in criteria_results
+            result["status"] != "passed" for result in criteria_results
         ):
             raise ValueError(
                 "Task agent marked completed before all acceptance criteria passed."
@@ -245,7 +247,7 @@ class ClaudeCodingAgent:
                             "status": {
                                 "type": "string",
                                 "enum": [
-                                    "passing",
+                                    "passed",
                                     "failing",
                                     "not_verified",
                                     "blocked",
@@ -336,8 +338,10 @@ class ClaudeCodingAgent:
                 raise ValueError("Task agent returned an invalid criteria result.")
             criterion = str(raw_result.get("criterion", "")).strip()
             result_status = str(raw_result.get("status", "")).strip().lower()
+            if result_status == "passing":
+                result_status = "passed"
             evidence = str(raw_result.get("evidence", "")).strip()
-            if result_status not in {"passing", "failing", "not_verified", "blocked"}:
+            if result_status not in {"passed", "failing", "not_verified", "blocked"}:
                 raise ValueError("Task agent returned an invalid criterion status.")
             if not criterion or not evidence:
                 raise ValueError("Task agent returned incomplete criterion evidence.")
@@ -496,6 +500,7 @@ class ClaudeCodingAgent:
         prompt: str,
         task: TaskRecord,
         handoffs: list[dict[str, Any]] | None = None,
+        run_acceptance_criteria: list[dict[str, Any]] | None = None,
         recovery_context: str | None = None,
     ) -> str:
         handoff = ""
@@ -522,6 +527,17 @@ Recovery context:
 Resume the current task from durable workspace state. Inspect current state
 before repeating a side-effecting operation that may have partially completed.
 """
+        run_criteria = ""
+        if run_acceptance_criteria:
+            run_criteria = f"""
+
+Run acceptance criteria (global constitution):
+{json.dumps(run_acceptance_criteria, ensure_ascii=True, indent=2)}
+
+The whole run is only successful when every item in this global list is satisfied.
+Use it for context and consistency, but complete only the current planned task in
+this query.
+"""
         return f"""
 You are the implementation agent for a controlled Python coding PoC.
 
@@ -536,6 +552,7 @@ Task detail:
 
 Task acceptance criteria:
 {ClaudeCodingAgent._criteria_text(task)}
+{run_criteria}
 {handoff}
 
 Work only inside the current run workspace.
@@ -554,7 +571,7 @@ For this V0 workflow:
 - Return status `completed` only when this task's acceptance criteria are met.
 - Return one `criteria_results` item for each acceptance criterion in the exact
   same order and with the exact same criterion text.
-- Mark a criterion as `passing` only when this task has concrete tool evidence or
+- Mark a criterion as `passed` only when this task has concrete tool evidence or
   current workspace evidence. Use `not_verified`, `failing`, or `blocked` instead
   of guessing.
 - Return status `blocked` when a missing prerequisite, missing access, or a

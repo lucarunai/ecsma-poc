@@ -49,6 +49,7 @@ class RunRecord:
     session_id: str
     prompt: str
     status: str
+    acceptance_criteria: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

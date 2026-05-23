@@ -54,15 +54,20 @@ Brain service does not share in-memory state with Web.
 Claude session id as soon as the SDK init message arrives for transcript
 indexing. Brain does not use that provider session id to resume the next Agent
 SDK query. Every task query starts a new model session and receives durable
-`task_handoffs.payload` JSON from earlier task queries instead. The handoff
-payload is `task_handoff.v1`: it stores a run-level `planned_task_results`
-snapshot, the latest completed task, per-criterion verification status, and
-sparse verification evidence such as commands run, files changed, or published
-artifacts. Brain sends the latest run progress snapshot plus older task
-summaries into the next fresh query. `tool_calls` stores Agent-requested tool
-inputs, while `tool_executions` stores runtime envelopes that return from
-Sandbox or the trusted broker. Session events put tool calls, Sandbox runtime
-failures, and task state under the Task list and SSE timeline.
+`task_handoffs.payload` JSON from earlier task queries instead. The run row
+stores a global `acceptance_criteria` JSON document after planning; this is the
+run-level constitution that every fresh Task Agent query receives. Each task row
+also keeps its own local `acceptance_criteria`, which bounds the current query.
+The handoff payload is `task_handoff.v1`: it stores the run-level acceptance
+criteria, a `planned_task_results` snapshot with every task's description,
+criteria, status, and summary, the latest completed task, per-criterion
+verification status, and sparse verification evidence such as commands run,
+files changed, or published artifacts. Brain sends the global criteria, latest
+run progress snapshot, and prior task summaries into the next fresh query.
+`tool_calls` stores Agent-requested tool inputs, while `tool_executions` stores
+runtime envelopes that return from Sandbox or the trusted broker. Session events
+put tool calls, Sandbox runtime failures, and task state under the Task list and
+SSE timeline.
 
 When a tool runtime failure blocks or fails a run, Web calls
 `POST /api/runs/{run_id}/wake`. Wake re-queues the run; Brain reloads existing

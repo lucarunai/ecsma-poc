@@ -88,16 +88,19 @@ class BlockingAgent:
     def __init__(self) -> None:
         self.tasks: list[str] = []
         self.handoffs: list[list[dict]] = []
+        self.run_acceptance_criteria: list[list[dict]] = []
 
     async def implement(
         self,
         *,
         task: TaskRecord,
         handoffs: list[dict],
+        run_acceptance_criteria: list[dict],
         **_,
     ) -> AgentTaskResult:
         self.tasks.append(task.id)
         self.handoffs.append(list(handoffs))
+        self.run_acceptance_criteria.append(list(run_acceptance_criteria))
         return AgentTaskResult(
             status="blocked",
             summary="Clone needs repository access.",
@@ -120,6 +123,7 @@ class CompletingAgent:
     def __init__(self) -> None:
         self.tasks: list[str] = []
         self.handoffs: list[list[dict]] = []
+        self.run_acceptance_criteria: list[list[dict]] = []
         self.recovery_contexts: list[str | None] = []
 
     async def implement(
@@ -127,11 +131,13 @@ class CompletingAgent:
         *,
         task: TaskRecord,
         handoffs: list[dict],
+        run_acceptance_criteria: list[dict],
         recovery_context: str | None = None,
         **_,
     ) -> AgentTaskResult:
         self.tasks.append(task.id)
         self.handoffs.append(list(handoffs))
+        self.run_acceptance_criteria.append(list(run_acceptance_criteria))
         self.recovery_contexts.append(recovery_context)
         return AgentTaskResult(
             status="completed",
@@ -140,7 +146,7 @@ class CompletingAgent:
             criteria_results=[
                 {
                     "criterion": criterion,
-                    "status": "passing",
+                    "status": "passed",
                     "evidence": f"{criterion} was verified in the test fixture.",
                 }
                 for criterion in task.acceptance_criteria
@@ -324,17 +330,39 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(agent.tasks, ["task_1", "task_2"])
+        self.assertEqual(
+            agent.run_acceptance_criteria[0][0]["acceptance_criteria"],
+            ["Repository cloned."],
+        )
+        tasks_created_events = [
+            payload for event_type, payload in store.events
+            if event_type == "tasks.created"
+        ]
+        self.assertEqual(
+            tasks_created_events[0]["run_acceptance_criteria"][1][
+                "acceptance_criteria"
+            ],
+            ["Code changed."],
+        )
+        self.assertEqual(agent.run_acceptance_criteria[1], agent.run_acceptance_criteria[0])
         self.assertEqual(agent.handoffs[0], [])
         self.assertEqual(agent.handoffs[1][0]["from_task"]["id"], "task_1")
         self.assertEqual(agent.handoffs[1][0]["summary"], "task_1 completed.")
         self.assertEqual(agent.handoffs[1][0]["schema_version"], "task_handoff.v1")
+        self.assertNotIn("run_acceptance_criteria", agent.handoffs[1][0])
         self.assertEqual(
             agent.handoffs[1][0]["planned_task_results"][0]["title"],
             "Clone repo",
         )
         self.assertEqual(
+            agent.handoffs[1][0]["planned_task_results"][0][
+                "acceptance_criteria"
+            ],
+            ["Repository cloned."],
+        )
+        self.assertEqual(
             agent.handoffs[1][0]["planned_task_results"][0]["status"],
-            "passing",
+            "passed",
         )
         self.assertEqual(
             agent.handoffs[1][0]["planned_task_results"][1]["status"],
@@ -344,7 +372,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
             agent.handoffs[1][0]["latest_completed_task"]["criteria_results"][0][
                 "status"
             ],
-            "passing",
+            "passed",
         )
         self.assertEqual(
             agent.handoffs[1][0]["latest_completed_task"]["verification"][
@@ -408,6 +436,10 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(agent.tasks, ["task_resume"])
         self.assertEqual(agent.handoffs[0][0]["from_task"]["id"], "task_done")
+        self.assertEqual(
+            agent.handoffs[0][0]["planned_task_results"][0]["status"],
+            "passing",
+        )
         self.assertIn("toolcall_failed", agent.recovery_contexts[0])
         self.assertIn("sandbox_runtime_error", agent.recovery_contexts[0])
         self.assertIn("run.resumed", [event_type for event_type, _ in store.events])

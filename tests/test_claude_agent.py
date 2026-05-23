@@ -70,9 +70,25 @@ class ClaudeCodingAgentTests(unittest.TestCase):
                     "summary": "Repository cloned.",
                 }
             ],
+            [
+                {
+                    "task_id": "task_1",
+                    "task_seq": 1,
+                    "title": "Clone repo",
+                    "acceptance_criteria": ["Repository cloned."],
+                },
+                {
+                    "task_id": "task_2",
+                    "task_seq": 2,
+                    "title": "Edit repo",
+                    "acceptance_criteria": ["hello.py exists."],
+                },
+            ],
         )
 
         self.assertIn("Durable handoff context", prompt)
+        self.assertIn("Run acceptance criteria (global constitution)", prompt)
+        self.assertIn('"acceptance_criteria": [', prompt)
         self.assertIn('"previous_task_detail"', prompt)
         self.assertIn('"summary": "Repository cloned."', prompt)
         self.assertIn("fresh model session", prompt)

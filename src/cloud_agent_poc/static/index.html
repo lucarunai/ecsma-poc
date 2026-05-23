@@ -90,6 +90,28 @@
         min-height: 0;
       }
 
+      .run-plan {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      .run-plan[hidden] {
+        display: none;
+      }
+
+      .run-criteria-json {
+        background: transparent;
+        color: var(--ink);
+        font-size: 13px;
+        line-height: 1.45;
+        margin: 0;
+        overflow-wrap: anywhere;
+        padding: 0;
+        white-space: pre-wrap;
+      }
+
       .task-list {
         display: grid;
         gap: 8px;
@@ -427,6 +449,10 @@
         </div>
       </section>
       <section class="panel tasks-panel">
+        <h2>Run</h2>
+        <div class="run-plan" id="run-plan" hidden>
+          <pre class="run-criteria-json" id="run-criteria-json"></pre>
+        </div>
         <h2>Tasks</h2>
         <ol class="task-list" id="task-list">
           <li class="empty-task">Tasks will appear after planning.</li>
@@ -444,11 +470,24 @@
       const wakeButton = document.querySelector("#wake");
       const runStatus = document.querySelector("#run-status");
       const taskList = document.querySelector("#task-list");
+      const runPlan = document.querySelector("#run-plan");
+      const runCriteriaJson = document.querySelector("#run-criteria-json");
       const promptInput = document.querySelector("#prompt");
       const tasks = new Map();
+      let runCriteria = [];
       let sessionId;
       let currentRunId;
       let latestEventId = 0;
+
+      function renderRunPlan() {
+        if (!runCriteria.length) {
+          runPlan.hidden = true;
+          runCriteriaJson.textContent = "";
+          return;
+        }
+        runPlan.hidden = false;
+        runCriteriaJson.textContent = JSON.stringify(runCriteria, null, 2);
+      }
 
       function renderTasks() {
         taskList.replaceChildren();
@@ -530,12 +569,16 @@
 
       function resetTasks() {
         tasks.clear();
+        runCriteria = [];
         wakeButton.hidden = true;
+        renderRunPlan();
         renderTasks();
       }
 
       function updateTaskFromEvent(event) {
         if (event.event_type === "tasks.created") {
+          currentRunId = event.payload.run_id || currentRunId;
+          runCriteria = event.payload.run_acceptance_criteria || [];
           tasks.clear();
           (event.payload.tasks || []).forEach((task) => {
             tasks.set(task.id, {
@@ -546,6 +589,7 @@
               tools: new Map(),
             });
           });
+          renderRunPlan();
           renderTasks();
           return;
         }
@@ -573,6 +617,7 @@
           task.handoff = event.payload;
         }
         tasks.set(task.id, task);
+        renderRunPlan();
         renderTasks();
       }
 

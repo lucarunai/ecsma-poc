@@ -11,12 +11,16 @@ CREATE TABLE IF NOT EXISTS runs (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     prompt TEXT NOT NULL,
     status TEXT NOT NULL,
+    acceptance_criteria JSONB NOT NULL DEFAULT '[]'::jsonb,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     started_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ,
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE runs
+    ADD COLUMN IF NOT EXISTS acceptance_criteria JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,

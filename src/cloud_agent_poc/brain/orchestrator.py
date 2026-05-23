@@ -41,8 +41,13 @@ class RunOrchestrator:
                 payload={"run_id": run_id},
             )
             workspace = await self._workspace_for_run(run_id, recovery_bundle)
+            run_acceptance_criteria = self._run_acceptance_criteria_from_bundle(
+                recovery_bundle
+            )
             if existing_tasks:
                 tasks = existing_tasks
+                if not run_acceptance_criteria:
+                    run_acceptance_criteria = self._run_acceptance_criteria(tasks)
             else:
                 await self._emit(
                     session_id=session_id,
@@ -63,11 +68,19 @@ class RunOrchestrator:
                         ),
                     ),
                 )
+                run_acceptance_criteria = self._run_acceptance_criteria(tasks)
+                await self.store.update_run(
+                    run_id,
+                    "running",
+                    acceptance_criteria=run_acceptance_criteria,
+                )
                 await self._emit(
                     session_id=session_id,
                     run_id=run_id,
                     event_type="tasks.created",
                     payload={
+                        "run_id": run_id,
+                        "run_acceptance_criteria": run_acceptance_criteria,
                         "tasks": [
                             {
                                 "id": task.id,
@@ -91,6 +104,7 @@ class RunOrchestrator:
                     tasks=tasks,
                     workspace=workspace,
                     handoffs=handoffs,
+                    run_acceptance_criteria=run_acceptance_criteria,
                     recovery_context=self._recovery_context(recovery_bundle, task),
                 )
                 if result.status == "blocked":
@@ -107,7 +121,14 @@ class RunOrchestrator:
                         payload={"run_id": run_id, "summary": result.summary},
                     )
                     return
-                handoffs.append(self._handoff_payload(task, result, tasks, handoffs))
+                handoffs.append(
+                    self._handoff_payload(
+                        task,
+                        result,
+                        tasks,
+                        handoffs,
+                    )
+                )
             await self.store.update_run(run_id, "completed", ended=True)
             await self._emit(
                 session_id=session_id,
@@ -140,6 +161,7 @@ class RunOrchestrator:
         tasks: list[TaskRecord],
         workspace: Workspace,
         handoffs: list[dict[str, Any]],
+        run_acceptance_criteria: list[dict[str, Any]],
         recovery_context: str | None,
     ) -> AgentTaskResult:
         attempt = await self.store.create_task_attempt(
@@ -171,6 +193,7 @@ class RunOrchestrator:
                 task=task,
                 task_attempt_id=attempt.id,
                 handoffs=handoffs,
+                run_acceptance_criteria=run_acceptance_criteria,
                 recovery_context=recovery_context,
                 emit=emit,
                 record_claude_session=record_claude_session,
@@ -215,7 +238,12 @@ class RunOrchestrator:
                 "transcript_path": transcript_path,
             },
         )
-        handoff_payload = self._handoff_payload(task, result, tasks, handoffs)
+        handoff_payload = self._handoff_payload(
+            task,
+            result,
+            tasks,
+            handoffs,
+        )
         await self.store.create_task_handoff(
             session_id=session_id,
             run_id=run_id,
@@ -306,6 +334,30 @@ class RunOrchestrator:
         return handoffs
 
     @staticmethod
+    def _run_acceptance_criteria_from_bundle(
+        recovery_bundle: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        raw_criteria = (recovery_bundle or {}).get("run", {}).get(
+            "acceptance_criteria",
+        )
+        if not isinstance(raw_criteria, list):
+            return []
+        return [item for item in raw_criteria if isinstance(item, dict)]
+
+    @staticmethod
+    def _run_acceptance_criteria(tasks: list[TaskRecord]) -> list[dict[str, Any]]:
+        return [
+            {
+                "task_id": task.id,
+                "task_seq": task.seq,
+                "title": task.title,
+                "description": task.description,
+                "acceptance_criteria": list(task.acceptance_criteria),
+            }
+            for task in tasks
+        ]
+
+    @staticmethod
     def _handoff_payload(
         task: TaskRecord,
         result: AgentTaskResult,
@@ -362,7 +414,9 @@ class RunOrchestrator:
                 status = RunOrchestrator._progress_status(current_result.status)
                 summary = current_result.summary
             elif prior_item:
-                status = str(prior_item.get("status") or "pending")
+                status = RunOrchestrator._normalize_plan_status(
+                    str(prior_item.get("status") or "pending")
+                )
                 summary = prior_item.get("summary")
             else:
                 status = RunOrchestrator._progress_status(planned_task.status)
@@ -371,6 +425,8 @@ class RunOrchestrator:
                 "task_id": planned_task.id,
                 "task_seq": planned_task.seq,
                 "title": planned_task.title,
+                "description": planned_task.description,
+                "acceptance_criteria": planned_task.acceptance_criteria,
                 "status": status,
                 "summary": summary,
             }
@@ -395,10 +451,16 @@ class RunOrchestrator:
     @staticmethod
     def _progress_status(status: str) -> str:
         if status == "completed":
-            return "passing"
+            return "passed"
         if status in {"blocked", "failed"}:
             return status
         return "pending"
+
+    @staticmethod
+    def _normalize_plan_status(status: str) -> str:
+        if status == "passing":
+            return "passed"
+        return status
 
     @staticmethod
     def _recovery_context(

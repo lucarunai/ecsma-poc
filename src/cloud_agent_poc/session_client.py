@@ -58,6 +58,7 @@ class SessionLayerClient:
         started: bool = False,
         ended: bool = False,
         metadata: dict[str, Any] | None = None,
+        acceptance_criteria: list[dict[str, Any]] | None = None,
     ) -> None:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.patch(
@@ -68,6 +69,7 @@ class SessionLayerClient:
                     "started": started,
                     "ended": ended,
                     "metadata": metadata,
+                    "acceptance_criteria": acceptance_criteria,
                 },
             )
             response.raise_for_status()

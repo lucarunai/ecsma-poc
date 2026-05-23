@@ -24,6 +24,7 @@ class RunUpdateRequest(BaseModel):
     started: bool = False
     ended: bool = False
     metadata: dict[str, Any] | None = None
+    acceptance_criteria: list[dict[str, Any]] | None = None
 
 
 class PlannedTaskRequest(BaseModel):
@@ -247,6 +248,7 @@ async def update_run(run_id: str, body: RunUpdateRequest) -> dict[str, str]:
         started=body.started,
         ended=body.ended,
         metadata=body.metadata,
+        acceptance_criteria=body.acceptance_criteria,
     )
     return {"status": "ok"}
 

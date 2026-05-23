@@ -50,8 +50,8 @@ class PostgresSessionStore:
         ) as conn:
             cursor = await conn.execute(
                 """
-                SELECT id, session_id, prompt, status, metadata, started_at, ended_at,
-                       error_message, created_at
+                SELECT id, session_id, prompt, status, acceptance_criteria,
+                       metadata, started_at, ended_at, error_message, created_at
                 FROM runs
                 WHERE id = %s
                 """,
@@ -80,7 +80,8 @@ class PostgresSessionStore:
                         started_at = COALESCE(started_at, NOW())
                     FROM next_run
                     WHERE runs.id = next_run.id
-                    RETURNING runs.id, runs.session_id, runs.prompt, runs.status
+                    RETURNING runs.id, runs.session_id, runs.prompt, runs.status,
+                              runs.acceptance_criteria
                     """
                 )
                 row = await cursor.fetchone()
@@ -95,8 +96,14 @@ class PostgresSessionStore:
         started: bool = False,
         ended: bool = False,
         metadata: dict[str, Any] | None = None,
+        acceptance_criteria: list[dict[str, Any]] | None = None,
     ) -> None:
         metadata_json = json.dumps(metadata or {})
+        acceptance_criteria_json = (
+            json.dumps(acceptance_criteria)
+            if acceptance_criteria is not None
+            else None
+        )
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
             await conn.execute(
                 """
@@ -106,10 +113,23 @@ class PostgresSessionStore:
                     started_at = CASE WHEN %s THEN COALESCE(started_at, NOW())
                                       ELSE started_at END,
                     ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END,
-                    metadata = metadata || %s::jsonb
+                    metadata = metadata || %s::jsonb,
+                    acceptance_criteria = CASE
+                        WHEN %s::jsonb IS NULL THEN acceptance_criteria
+                        ELSE %s::jsonb
+                        END
                 WHERE id = %s
                 """,
-                (status, error_message, started, ended, metadata_json, run_id),
+                (
+                    status,
+                    error_message,
+                    started,
+                    ended,
+                    metadata_json,
+                    acceptance_criteria_json,
+                    acceptance_criteria_json,
+                    run_id,
+                ),
             )
 
     async def create_tasks(
