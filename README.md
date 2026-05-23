@@ -260,6 +260,30 @@ Start the Web UI port-forward after deployment:
 
 Keep that command running, then open `http://localhost:18080`.
 
+### V2 Namespace Deployment
+
+The `k8s-v2` directory deploys an isolated copy into
+`cloud-agent-poc-v2`. Namespace-scoped resources, ConfigMap/Secret names,
+labels, RBAC subjects, and the runtime image tag are rewritten for v2.
+
+```bash
+docker build -t cloud-agent-poc-v2:local .
+kubectl apply -f k8s-v2/namespace.yaml
+kubectl -n cloud-agent-poc-v2 create secret generic cloud-agent-poc-v2-secrets \
+  --from-literal=GITHUB_TOKEN="$GITHUB_TOKEN" \
+  --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s-v2/
+```
+
+Use a separate local port so v1 and v2 can be inspected side by side:
+
+```bash
+./scripts/port-forward-web-v2.sh
+```
+
+Then open `http://localhost:18082`.
+
 ## API
 
 ```text
