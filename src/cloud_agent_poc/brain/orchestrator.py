@@ -79,7 +79,7 @@ class RunOrchestrator:
                         ]
                     },
                 )
-            claude_session_id = self._resume_session_id(recovery_bundle)
+            handoffs = self._handoffs_from_bundle(recovery_bundle)
             for task in tasks:
                 if task.status == "completed":
                     continue
@@ -88,17 +88,11 @@ class RunOrchestrator:
                     run_id=run_id,
                     prompt=prompt,
                     task=task,
+                    tasks=tasks,
                     workspace=workspace,
-                    resume_session_id=claude_session_id,
+                    handoffs=handoffs,
                     recovery_context=self._recovery_context(recovery_bundle, task),
                 )
-                claude_session_id = result.claude_session_id or claude_session_id
-                if claude_session_id:
-                    await self.store.update_run(
-                        run_id,
-                        "running",
-                        metadata={"claude_session_id": claude_session_id},
-                    )
                 if result.status == "blocked":
                     await self.store.update_run(
                         run_id,
@@ -113,6 +107,7 @@ class RunOrchestrator:
                         payload={"run_id": run_id, "summary": result.summary},
                     )
                     return
+                handoffs.append(self._handoff_payload(task, result, tasks, handoffs))
             await self.store.update_run(run_id, "completed", ended=True)
             await self._emit(
                 session_id=session_id,
@@ -142,14 +137,14 @@ class RunOrchestrator:
         run_id: str,
         prompt: str,
         task: TaskRecord,
+        tasks: list[TaskRecord],
         workspace: Workspace,
-        resume_session_id: str | None,
+        handoffs: list[dict[str, Any]],
         recovery_context: str | None,
     ) -> AgentTaskResult:
         attempt = await self.store.create_task_attempt(
             run_id=run_id,
             task_id=task.id,
-            resume_from_session_id=resume_session_id,
         )
         await self.store.update_task(task.id, "running", started=True)
         await self._emit_task(session_id, run_id, task, "task.started")
@@ -169,18 +164,13 @@ class RunOrchestrator:
                 "running",
                 claude_session_id=claude_session_id,
             )
-            await self.store.update_run(
-                run_id,
-                "running",
-                metadata={"active_claude_session_id": claude_session_id},
-            )
 
         try:
             result = await self.agent.implement(
                 prompt=prompt,
                 task=task,
                 task_attempt_id=attempt.id,
-                resume_session_id=resume_session_id,
+                handoffs=handoffs,
                 recovery_context=recovery_context,
                 emit=emit,
                 record_claude_session=record_claude_session,
@@ -225,30 +215,23 @@ class RunOrchestrator:
                 "transcript_path": transcript_path,
             },
         )
-        handoff_id = await self.store.create_task_handoff(
+        handoff_payload = self._handoff_payload(task, result, tasks, handoffs)
+        await self.store.create_task_handoff(
             session_id=session_id,
             run_id=run_id,
             from_task_id=task.id,
             status=result.status,
             summary=result.summary,
+            payload=handoff_payload,
             claude_session_id=result.claude_session_id,
-            next_resume_session_id=result.claude_session_id,
             transcript_id=transcript_id,
         )
-        await self._emit_task(
-            session_id,
-            run_id,
-            task,
-            "task.handoff",
-            {
-                "status": result.status,
-                "summary": result.summary,
-                "claude_session_id": result.claude_session_id,
-                "next_resume_session_id": result.claude_session_id,
-                "handoff_id": handoff_id,
-                "transcript_artifact_id": transcript_id,
-                "transcript_path": transcript_path,
-            },
+        await self._emit(
+            session_id=session_id,
+            run_id=run_id,
+            task_id=task.id,
+            event_type="task.handoff",
+            payload=handoff_payload,
         )
         if result.status == "failed":
             raise RuntimeError(f"Task {task.seq} failed: {result.summary}")
@@ -304,15 +287,118 @@ class RunOrchestrator:
         ]
 
     @staticmethod
-    def _resume_session_id(recovery_bundle: dict[str, Any] | None) -> str | None:
-        bundle = recovery_bundle or {}
-        metadata = bundle.get("run", {}).get("metadata") or {}
-        if metadata.get("active_claude_session_id"):
-            return str(metadata["active_claude_session_id"])
-        for attempt in bundle.get("task_attempts", []):
-            if attempt.get("claude_session_id"):
-                return str(attempt["claude_session_id"])
-        return metadata.get("claude_session_id")
+    def _handoffs_from_bundle(
+        recovery_bundle: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        handoffs: list[dict[str, Any]] = []
+        for handoff in (recovery_bundle or {}).get("task_handoffs", []):
+            payload = handoff.get("payload")
+            if isinstance(payload, dict) and payload:
+                handoffs.append(payload)
+                continue
+            handoffs.append(
+                {
+                    "from_task": {"id": handoff.get("from_task_id")},
+                    "status": handoff.get("status"),
+                    "summary": handoff.get("summary"),
+                }
+            )
+        return handoffs
+
+    @staticmethod
+    def _handoff_payload(
+        task: TaskRecord,
+        result: AgentTaskResult,
+        tasks: list[TaskRecord],
+        prior_handoffs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "task_handoff.v1",
+            "run_id": task.run_id,
+            "from_task": {
+                "id": task.id,
+                "seq": task.seq,
+                "kind": task.kind,
+                "title": task.title,
+            },
+            "planned_task_results": RunOrchestrator._planned_task_results(
+                tasks,
+                current_task=task,
+                current_result=result,
+                prior_handoffs=prior_handoffs,
+            ),
+            "latest_completed_task": {
+                "task_id": task.id,
+                "task_seq": task.seq,
+                "kind": task.kind,
+                "title": task.title,
+                "status": result.status,
+                "criteria_results": result.criteria_results,
+                **(
+                    {"verification": result.verification}
+                    if result.verification
+                    else {}
+                ),
+            },
+            "status": result.status,
+            "summary": result.summary,
+        }
+
+    @staticmethod
+    def _planned_task_results(
+        tasks: list[TaskRecord],
+        *,
+        current_task: TaskRecord,
+        current_result: AgentTaskResult,
+        prior_handoffs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        latest_prior_results = RunOrchestrator._latest_planned_task_results(
+            prior_handoffs
+        )
+        results: list[dict[str, Any]] = []
+        for planned_task in tasks:
+            prior_item = latest_prior_results.get(planned_task.id) or {}
+            if planned_task.id == current_task.id:
+                status = RunOrchestrator._progress_status(current_result.status)
+                summary = current_result.summary
+            elif prior_item:
+                status = str(prior_item.get("status") or "pending")
+                summary = prior_item.get("summary")
+            else:
+                status = RunOrchestrator._progress_status(planned_task.status)
+                summary = None
+            item: dict[str, Any] = {
+                "task_id": planned_task.id,
+                "task_seq": planned_task.seq,
+                "title": planned_task.title,
+                "status": status,
+                "summary": summary,
+            }
+            results.append(item)
+        return results
+
+    @staticmethod
+    def _latest_planned_task_results(
+        handoffs: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        for handoff in reversed(handoffs):
+            planned_results = handoff.get("planned_task_results")
+            if not isinstance(planned_results, list):
+                continue
+            return {
+                str(item.get("task_id")): item
+                for item in planned_results
+                if isinstance(item, dict) and item.get("task_id")
+            }
+        return {}
+
+    @staticmethod
+    def _progress_status(status: str) -> str:
+        if status == "completed":
+            return "passing"
+        if status in {"blocked", "failed"}:
+            return status
+        return "pending"
 
     @staticmethod
     def _recovery_context(

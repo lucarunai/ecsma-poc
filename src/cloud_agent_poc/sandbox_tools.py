@@ -17,22 +17,11 @@ TOOL_NAMES = {
     "edit_workspace_file",
     "glob_workspace_files",
     "grep_workspace_files",
-    "clone_github_repository",
-    "checkout_git_branch",
     "create_git_branch",
     "git_status",
     "git_diff_stat",
     "run_python_unittest",
     "commit_git_changes",
-    "push_current_git_branch",
-    "create_github_pull_request",
-}
-
-GITHUB_SECRET_TOOLS = {
-    "clone_github_repository",
-    "checkout_git_branch",
-    "push_current_git_branch",
-    "create_github_pull_request",
 }
 
 

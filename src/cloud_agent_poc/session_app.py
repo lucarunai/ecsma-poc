@@ -45,7 +45,6 @@ class TaskUpdateRequest(BaseModel):
 
 class TaskAttemptCreateRequest(BaseModel):
     run_id: str
-    resume_from_session_id: str | None = None
 
 
 class TaskAttemptUpdateRequest(BaseModel):
@@ -95,8 +94,8 @@ class TaskHandoffCreateRequest(BaseModel):
     to_task_id: str | None = None
     status: str
     summary: str
+    payload: dict[str, Any]
     claude_session_id: str | None = None
-    next_resume_session_id: str | None = None
     transcript_id: str | None = None
 
 
@@ -286,7 +285,6 @@ async def create_task_attempt(
     attempt = await store.create_task_attempt(
         run_id=body.run_id,
         task_id=task_id,
-        resume_from_session_id=body.resume_from_session_id,
     )
     return attempt.__dict__
 
@@ -370,8 +368,8 @@ async def create_task_handoff(body: TaskHandoffCreateRequest) -> dict[str, int]:
         to_task_id=body.to_task_id,
         status=body.status,
         summary=body.summary,
+        payload=body.payload,
         claude_session_id=body.claude_session_id,
-        next_resume_session_id=body.next_resume_session_id,
         transcript_id=body.transcript_id,
     )
     return {"handoff_id": handoff_id}

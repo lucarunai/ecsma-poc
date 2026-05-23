@@ -10,7 +10,11 @@ layers:
   tasks, task attempts, tool calls/executions, durable platform events, task
   handoffs, and agent transcript indexes.
 - Sandbox layer: a manager service owning run workspaces and launching one-shot
-  tool Pods for file, Git, Python test, push, and pull-request operations.
+  tool Pods for untrusted workspace file, Git, and Python test operations.
+
+The trusted GitHub Broker is a credential boundary beside those layers. It owns
+authenticated GitHub operations without exposing long-lived tokens to Sandbox
+tool Pods.
 
 The first supported business flow is intentionally narrow:
 
@@ -33,7 +37,9 @@ Browser
            -> Sandbox Manager
               -> one-shot Sandbox tool Pod
                  -> mounted run workspace
-                 -> GitHubWorkflowService
+           -> GitHub Broker
+              -> mounted run workspace
+              -> GitHubWorkflowService
      -> Session service events + transcript/handoff indexes
         -> Postgres
         -> Session artifact volume
@@ -44,29 +50,40 @@ into platform events before it reaches SSE, so the frontend does not depend on
 SDK message shapes. The Web service streams events from the Session service; the
 Brain service does not share in-memory state with Web.
 
-`task_attempts` stores each Task Agent query attempt and captures its active
-Claude session id as soon as the SDK init message arrives. `tool_calls` stores
-Agent-requested tool inputs, while `tool_executions` stores Sandbox attempt
-envelopes that return from the Sandbox Manager. Session events put tool calls,
-Sandbox runtime failures, and task state under the Task list and SSE timeline.
+`task_attempts` stores each Task Agent query attempt and captures the fresh
+Claude session id as soon as the SDK init message arrives for transcript
+indexing. Brain does not use that provider session id to resume the next Agent
+SDK query. Every task query starts a new model session and receives durable
+`task_handoffs.payload` JSON from earlier task queries instead. The handoff
+payload is `task_handoff.v1`: it stores a run-level `planned_task_results`
+snapshot, the latest completed task, per-criterion verification status, and
+sparse verification evidence such as commands run, files changed, or published
+artifacts. Brain sends the latest run progress snapshot plus older task
+summaries into the next fresh query. `tool_calls` stores Agent-requested tool
+inputs, while `tool_executions` stores runtime envelopes that return from
+Sandbox or the trusted broker. Session events put tool calls, Sandbox runtime
+failures, and task state under the Task list and SSE timeline.
 
 When a tool runtime failure blocks or fails a run, Web calls
 `POST /api/runs/{run_id}/wake`. Wake re-queues the run; Brain reloads existing
-tasks, tool failure context, the durable workspace, and the active Claude session
-id before resuming the current Task Agent. V1 leaves retry decisions to the
-resumed Agent instead of replaying side-effecting tools automatically.
+tasks, durable task handoff JSON, tool failure context, and the durable
+workspace before starting a new Task Agent query. V1 leaves retry decisions to
+the new Agent query instead of replaying side-effecting tools automatically.
 
 Claude Code writes provider transcripts under `/root/.claude`. In Kubernetes
 that path is mounted from the `session-artifacts` PVC on the Brain pod. The
 Brain process is the physical writer, but the volume is treated as Session
 Layer state and is indexed in Postgres through `agent_transcripts`.
+Transcript paths and artifact ids are audit/debug metadata; they are not used as
+handoff context for the next Agent query.
 
 Agent tools do not access a Brain workspace. Brain exposes controlled SDK MCP
-tools, but file reads/writes/edits/searches, Git operations, Python unittest,
-pushes, and pull-request creation flow through the Sandbox Manager. Each tool
-execution is handed to a temporary Sandbox Pod that mounts the current run
-workspace. Brain keeps the Claude harness and transcript mount; Sandbox owns the
-mutable checkout.
+tools; untrusted file reads/writes/edits/searches, local Git operations, and
+Python unittest calls flow through the Sandbox Manager. Authenticated GitHub
+clone, checkout, push, and pull-request calls flow through the trusted GitHub
+Broker. Sandbox Pods and the broker mount the current run workspace through
+their own execution boundary. Brain keeps the Claude harness and transcript
+mount; Session Layer indexes durable state.
 
 ## V0 Boundaries
 
@@ -111,11 +128,11 @@ mcp__coding__push_current_git_branch
 mcp__coding__create_github_pull_request
 ```
 
-Those GitHub tools execute in one-shot Sandbox Pods. The Manager injects the
-GitHub token only into Pods for tools that require GitHub credentials. The Task
-Agent can request a push or pull request through a tool call, but Brain and the
-Sandbox Manager do not hold GitHub credentials and the token is not written to
-the checkout.
+Those SDK tool names stay unified for the Task Agent. Brain routes credentialed
+GitHub operations to the GitHub Broker and routes untrusted workspace operations
+to one-shot Sandbox Pods. The Task Agent can request a push or pull request
+through a tool call, but Sandbox tool Pods do not receive GitHub credentials and
+the token is not written to the checkout.
 
 ## Configuration
 
@@ -125,6 +142,7 @@ Copy the values below into your environment before starting the services:
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ecsma_poc
 export SESSION_LAYER_URL=http://localhost:8002
 export SANDBOX_LAYER_URL=http://localhost:8003
+export GITHUB_BROKER_URL=http://localhost:8004
 export SANDBOX_EXECUTION_MODE=direct
 export GITHUB_TOKEN=github-token-with-pr-permission
 export ANTHROPIC_API_KEY=anthropic-api-key
@@ -145,10 +163,11 @@ export SANDBOX_RUNTIME_IMAGE=cloud-agent-poc:local
 export SANDBOX_TOOL_TIMEOUT_SECONDS=180
 ```
 
-`GITHUB_TOKEN` is used by Sandbox GitHub tools for authenticated clones, Git
-pushes, and PR creation. It is not passed to Claude Agent SDK prompts. Local
-development uses `SANDBOX_EXECUTION_MODE=direct`; Kubernetes sets it to
-`kubernetes` so the Manager creates one Pod per tool execution.
+`GITHUB_TOKEN` is used only by the trusted GitHub Broker for authenticated
+clones, fetches, pushes, and PR creation. It is not passed to Claude Agent SDK
+prompts or Sandbox tool Pods. Local development uses
+`SANDBOX_EXECUTION_MODE=direct`; Kubernetes sets it to `kubernetes` so the
+Manager creates one Pod per sandbox execution.
 
 ## Run Locally
 
@@ -164,11 +183,12 @@ Install dependencies:
 uv sync --extra dev
 ```
 
-Run Session, Sandbox, Web, and Brain in separate terminals:
+Run Session, Sandbox, GitHub Broker, Web, and Brain in separate terminals:
 
 ```bash
 uv run uvicorn cloud_agent_poc.session_app:app --reload --port 8002
 uv run uvicorn cloud_agent_poc.sandbox_app:app --reload --port 8003
+uv run uvicorn cloud_agent_poc.github_broker_app:app --reload --port 8004
 uv run uvicorn cloud_agent_poc.web:app --reload --port 8000
 uv run uvicorn cloud_agent_poc.brain_app:app --reload --port 8001
 ```
@@ -208,6 +228,7 @@ Kubernetes creates these deployments:
 cloud-agent-web
 cloud-agent-session
 cloud-agent-sandbox
+cloud-agent-github-broker
 cloud-agent-brain
 postgres
 ```
@@ -217,8 +238,13 @@ That lets Claude Agent SDK produce transcript JSONL files in a durable artifact
 space while Session Layer remains the logical owner through DB metadata.
 `cloud-agent-sandbox` mounts the `sandbox-workspaces` PVC at `/sandboxes` to
 create run workspace directories. Each one-shot Sandbox tool Pod mounts only its
-run directory at `/workspace`, so agent checkout and tool side effects stay out
+run directory at `/workspace`, so untrusted file and test side effects stay out
 of Brain and out of the Manager process.
+
+`cloud-agent-github-broker` is the only workload that receives `GITHUB_TOKEN`.
+Brain still exposes one MCP tool schema to the Agent, but it routes trusted
+GitHub operations (`clone`, authenticated `checkout`, `push`, and PR creation)
+to the broker. Sandbox tool Pods never receive GitHub credentials.
 
 Start the Web UI port-forward after deployment:
 
@@ -247,10 +273,10 @@ PYTHONPATH=src python3 -m unittest discover -v
 
 ## Next Iterations
 
-- Restore provider transcripts into a fresh Brain pod before cross-pod resume.
+- Keep provider transcripts as audit artifacts while task resume stays based on
+  durable handoff JSON.
 - Move transcript artifact storage from PVC to object storage when leaving PoC.
 - Replace Postgres polling with a durable queue or notification channel.
 - Harden the Sandbox Pod boundary with resource quotas, network policy, and
   stronger admission controls before accepting arbitrary users.
-- Add checkpoints, artifacts, and structured verification evidence for
-  long-running work.
+- Add a stronger platform-side verifier for Agent-reported criteria evidence.

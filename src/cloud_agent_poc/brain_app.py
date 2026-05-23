@@ -12,6 +12,7 @@ from .brain.planner import AgentTaskPlanner
 from .brain.sdk_tools import CodingToolServerFactory
 from .brain.worker import BrainWorker
 from .config import Settings
+from .github_broker_client import GitHubBrokerClient
 from .sandbox_client import SandboxLayerClient
 from .session_client import SessionLayerClient
 
@@ -19,12 +20,13 @@ from .session_client import SessionLayerClient
 settings = Settings.from_env()
 store = SessionLayerClient(settings.session_layer_url)
 sandbox = SandboxLayerClient(settings.sandbox_layer_url)
+github_broker = GitHubBrokerClient(settings.github_broker_url)
 orchestrator = RunOrchestrator(
     store=store,
     planner=AgentTaskPlanner(settings),
     agent=ClaudeCodingAgent(
         settings,
-        CodingToolServerFactory(sandbox, store),
+        CodingToolServerFactory(sandbox, github_broker, store),
     ),
     sandbox=sandbox,
 )

@@ -51,7 +51,7 @@ class SandboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SandboxPodManifestTests(unittest.TestCase):
-    def test_github_token_is_only_injected_for_github_capability_tool(self) -> None:
+    def test_github_token_is_never_injected_into_sandbox_tool_pods(self) -> None:
         runner = object.__new__(KubernetesToolPodRunner)
         runner.settings = _settings(Path("/sandboxes"))
 
@@ -79,7 +79,7 @@ class SandboxPodManifestTests(unittest.TestCase):
         file_env = file_manifest["spec"]["containers"][0]["env"]
         clone_env = clone_manifest["spec"]["containers"][0]["env"]
         self.assertNotIn("GITHUB_TOKEN", [item["name"] for item in file_env])
-        self.assertIn("GITHUB_TOKEN", [item["name"] for item in clone_env])
+        self.assertNotIn("GITHUB_TOKEN", [item["name"] for item in clone_env])
         self.assertEqual(
             clone_manifest["spec"]["containers"][0]["volumeMounts"][0]["subPath"],
             "run_0123456789abcdef0123456789abcdef",
@@ -150,10 +150,11 @@ class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
 
 def _settings(workspace_root: Path) -> Settings:
     return Settings(
-        database_url="postgresql://unused",
-        session_layer_url="http://unused",
-        sandbox_layer_url="http://sandbox",
-        github_repo_url="https://github.com/lucarunai/demo.git",
+            database_url="postgresql://unused",
+            session_layer_url="http://unused",
+            sandbox_layer_url="http://sandbox",
+            github_broker_url="http://github-broker",
+            github_repo_url="https://github.com/lucarunai/demo.git",
         github_source_branch="test",
         github_target_branch="main",
         github_token=None,
@@ -163,12 +164,10 @@ def _settings(workspace_root: Path) -> Settings:
         git_author_name="Cloud Agent PoC",
         git_author_email="cloud-agent-poc@example.local",
         sandbox_execution_mode="direct",
-        sandbox_runtime_image="cloud-agent-poc:local",
-        sandbox_tool_timeout_seconds=180,
-        sandbox_workspace_claim="sandbox-workspaces",
-        sandbox_github_secret_name="cloud-agent-poc-secrets",
-        sandbox_github_secret_key="GITHUB_TOKEN",
-    )
+            sandbox_runtime_image="cloud-agent-poc:local",
+            sandbox_tool_timeout_seconds=180,
+            sandbox_workspace_claim="sandbox-workspaces",
+        )
 
 
 if __name__ == "__main__":

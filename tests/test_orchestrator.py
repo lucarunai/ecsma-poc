@@ -46,9 +46,15 @@ class RecordingStore:
         self.task_updates.append((task_id, status, kwargs))
 
     async def get_run_recovery_bundle(self, _: str):
-        return {"run": {"metadata": {}}, "tasks": [], "task_attempts": [], "tool_calls": []}
+        return {
+            "run": {"metadata": {}},
+            "tasks": [],
+            "task_attempts": [],
+            "tool_calls": [],
+            "task_handoffs": [],
+        }
 
-    async def create_task_attempt(self, *, run_id, task_id, resume_from_session_id):
+    async def create_task_attempt(self, *, run_id, task_id):
         self.attempt_no += 1
         return TaskAttemptRecord(
             id=f"attempt_{self.attempt_no}",
@@ -56,7 +62,6 @@ class RecordingStore:
             task_id=task_id,
             attempt_no=self.attempt_no,
             status="running",
-            resume_from_session_id=resume_from_session_id,
         )
 
     async def update_task_attempt(self, attempt_id: str, status: str, **kwargs):
@@ -82,45 +87,74 @@ class StaticPlanner:
 class BlockingAgent:
     def __init__(self) -> None:
         self.tasks: list[str] = []
-        self.resume_session_ids: list[str | None] = []
+        self.handoffs: list[list[dict]] = []
 
     async def implement(
         self,
         *,
         task: TaskRecord,
-        resume_session_id: str | None,
+        handoffs: list[dict],
         **_,
     ) -> AgentTaskResult:
         self.tasks.append(task.id)
-        self.resume_session_ids.append(resume_session_id)
+        self.handoffs.append(list(handoffs))
         return AgentTaskResult(
             status="blocked",
             summary="Clone needs repository access.",
             claude_session_id="claude-session-1",
+            criteria_results=[
+                {
+                    "criterion": criterion,
+                    "status": "blocked",
+                    "evidence": "Repository credentials were unavailable.",
+                }
+                for criterion in task.acceptance_criteria
+            ],
+            verification={
+                "notes": "No workspace changes were made.",
+            },
         )
 
 
 class CompletingAgent:
     def __init__(self) -> None:
         self.tasks: list[str] = []
-        self.resume_session_ids: list[str | None] = []
+        self.handoffs: list[list[dict]] = []
         self.recovery_contexts: list[str | None] = []
 
     async def implement(
         self,
         *,
         task: TaskRecord,
-        resume_session_id: str | None,
+        handoffs: list[dict],
         recovery_context: str | None = None,
         **_,
     ) -> AgentTaskResult:
         self.tasks.append(task.id)
-        self.resume_session_ids.append(resume_session_id)
+        self.handoffs.append(list(handoffs))
         self.recovery_contexts.append(recovery_context)
         return AgentTaskResult(
             status="completed",
             summary=f"{task.id} completed.",
             claude_session_id="claude-session-1",
+            criteria_results=[
+                {
+                    "criterion": criterion,
+                    "status": "passing",
+                    "evidence": f"{criterion} was verified in the test fixture.",
+                }
+                for criterion in task.acceptance_criteria
+            ],
+            verification={
+                "commands_run": [
+                    {
+                        "tool": "fixture_tool",
+                        "result": "passed",
+                        "summary": f"{task.id} fixture completed.",
+                    }
+                ],
+                "notes": "Fixture verification only.",
+            },
         )
 
 
@@ -147,7 +181,6 @@ class RecoveryStore(RecordingStore):
             "run": {
                 "metadata": {
                     "workspace_path": "/tmp/resume-run",
-                    "active_claude_session_id": "claude-session-active",
                 }
             },
             "tasks": [
@@ -184,6 +217,64 @@ class RecoveryStore(RecordingStore):
                     "latest_execution_id": "sbxexec_failed",
                 }
             ],
+            "task_handoffs": [
+                {
+                    "from_task_id": "task_done",
+                    "status": "completed",
+                    "summary": "Repository is ready.",
+                    "payload": {
+                        "schema_version": "task_handoff.v1",
+                        "planned_task_results": [
+                            {
+                                "task_id": "task_done",
+                                "task_seq": 1,
+                                "title": "Clone repo",
+                                "status": "passing",
+                                "summary": "Repository is ready.",
+                            },
+                            {
+                                "task_id": "task_resume",
+                                "task_seq": 2,
+                                "title": "Edit repo",
+                                "status": "pending",
+                                "summary": None,
+                            },
+                        ],
+                        "from_task": {
+                            "id": "task_done",
+                            "seq": 1,
+                            "kind": "model_task",
+                            "title": "Clone repo",
+                        },
+                        "latest_completed_task": {
+                            "task_id": "task_done",
+                            "task_seq": 1,
+                            "kind": "model_task",
+                            "title": "Clone repo",
+                            "status": "completed",
+                            "criteria_results": [
+                                {
+                                    "criterion": "Repository cloned.",
+                                    "status": "passing",
+                                    "evidence": "Fixture repository is ready.",
+                                }
+                            ],
+                            "verification": {
+                                "commands_run": [
+                                    {
+                                        "tool": "clone_github_repository",
+                                        "result": "passed",
+                                        "summary": "Fixture clone completed.",
+                                    }
+                                ],
+                                "notes": "Fixture recovery handoff.",
+                            },
+                        },
+                        "status": "completed",
+                        "summary": "Repository is ready.",
+                    },
+                }
+            ],
         }
 
 
@@ -206,7 +297,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(agent.tasks, ["task_1"])
-        self.assertEqual(agent.resume_session_ids, [None])
+        self.assertEqual(agent.handoffs, [[]])
         self.assertIn(("task_1", "blocked"), [(task_id, status) for task_id, status, _ in store.task_updates])
         self.assertIn(("run", "blocked"), [(run_id, status) for run_id, status, _ in store.run_updates])
         self.assertIn("task.blocked", [event_type for event_type, _ in store.events])
@@ -215,7 +306,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("run.completed", [event_type for event_type, _ in store.events])
         self.assertEqual(sandbox.deleted_run_ids, [])
 
-    async def test_next_task_resumes_previous_claude_session(self) -> None:
+    async def test_next_task_receives_previous_task_handoff_json(self) -> None:
         store = RecordingStore()
         agent = CompletingAgent()
         sandbox = StaticWorkspaceService()
@@ -233,8 +324,44 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(agent.tasks, ["task_1", "task_2"])
-        self.assertEqual(agent.resume_session_ids, [None, "claude-session-1"])
+        self.assertEqual(agent.handoffs[0], [])
+        self.assertEqual(agent.handoffs[1][0]["from_task"]["id"], "task_1")
+        self.assertEqual(agent.handoffs[1][0]["summary"], "task_1 completed.")
+        self.assertEqual(agent.handoffs[1][0]["schema_version"], "task_handoff.v1")
+        self.assertEqual(
+            agent.handoffs[1][0]["planned_task_results"][0]["title"],
+            "Clone repo",
+        )
+        self.assertEqual(
+            agent.handoffs[1][0]["planned_task_results"][0]["status"],
+            "passing",
+        )
+        self.assertEqual(
+            agent.handoffs[1][0]["planned_task_results"][1]["status"],
+            "pending",
+        )
+        self.assertEqual(
+            agent.handoffs[1][0]["latest_completed_task"]["criteria_results"][0][
+                "status"
+            ],
+            "passing",
+        )
+        self.assertEqual(
+            agent.handoffs[1][0]["latest_completed_task"]["verification"][
+                "commands_run"
+            ][0]["tool"],
+            "fixture_tool",
+        )
         self.assertIn("task.handoff", [event_type for event_type, _ in store.events])
+        handoff_events = [
+            payload for event_type, payload in store.events
+            if event_type == "task.handoff"
+        ]
+        self.assertEqual(handoff_events[0], store.handoffs[0]["payload"])
+        self.assertNotIn("handoff_id", handoff_events[0])
+        self.assertNotIn("transcript_artifact_id", handoff_events[0])
+        self.assertNotIn("transcript_path", handoff_events[0])
+        self.assertNotIn("task_id", handoff_events[0])
         self.assertIn("run.completed", [event_type for event_type, _ in store.events])
         self.assertIn("workspace.cleaned", [event_type for event_type, _ in store.events])
         self.assertEqual(sandbox.deleted_run_ids, ["run"])
@@ -280,7 +407,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(agent.tasks, ["task_resume"])
-        self.assertEqual(agent.resume_session_ids, ["claude-session-active"])
+        self.assertEqual(agent.handoffs[0][0]["from_task"]["id"], "task_done")
         self.assertIn("toolcall_failed", agent.recovery_contexts[0])
         self.assertIn("sandbox_runtime_error", agent.recovery_contexts[0])
         self.assertIn("run.resumed", [event_type for event_type, _ in store.events])

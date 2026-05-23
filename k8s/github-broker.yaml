@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-agent-github-broker
+  namespace: cloud-agent-poc
+spec:
+  selector:
+    app: cloud-agent-github-broker
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-agent-github-broker
+  namespace: cloud-agent-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloud-agent-github-broker
+  template:
+    metadata:
+      labels:
+        app: cloud-agent-github-broker
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: github-broker
+          image: cloud-agent-poc:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - cloud_agent_poc.github_broker_app:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          envFrom:
+            - configMapRef:
+                name: cloud-agent-poc-config
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-agent-poc-secrets
+                  key: GITHUB_TOKEN
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          volumeMounts:
+            - name: sandbox-workspaces
+              mountPath: /sandboxes
+      volumes:
+        - name: sandbox-workspaces
+          persistentVolumeClaim:
+            claimName: sandbox-workspaces

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -59,6 +60,7 @@ class AgentTaskPlanner:
             skills=[],
         )
         structured_output: dict[str, Any] | None = None
+        last_api_error_text: str | None = None
         async for message in query(
             prompt=self._planning_prompt(prompt),
             options=options,
@@ -70,9 +72,17 @@ class AgentTaskPlanner:
                 )
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if isinstance(block, TextBlock) and block.text.strip() and emit:
+                    if not isinstance(block, TextBlock) or not block.text.strip():
+                        continue
+                    if block.text.strip().lower().startswith("api error:"):
+                        last_api_error_text = block.text.strip()
+                    if emit:
                         await emit("planner.message", {"text": block.text})
             if isinstance(message, ResultMessage):
+                if message.is_error:
+                    raise RuntimeError(
+                        self._result_error_text(message, last_api_error_text)
+                    )
                 structured_output = getattr(message, "structured_output", None)
                 if structured_output is None:
                     result = getattr(message, "result", None)
@@ -80,7 +90,10 @@ class AgentTaskPlanner:
                         structured_output = self._parse_json_candidate(result)
         if not structured_output:
             raise RuntimeError("Planner agent did not return structured tasks.")
-        return self.parse_plan(structured_output)
+        return self._filter_unrequested_optional_tasks(
+            self.parse_plan(structured_output),
+            prompt,
+        )
 
     @staticmethod
     def parse_plan(structured_output: dict[str, Any]) -> list[PlannedTask]:
@@ -136,9 +149,104 @@ class AgentTaskPlanner:
         return parsed
 
     @staticmethod
+    def _result_error_text(
+        message: Any,
+        last_api_error_text: str | None = None,
+    ) -> str:
+        errors = getattr(message, "errors", None) or []
+        error_text = "; ".join(
+            str(error).strip() for error in errors if str(error).strip()
+        )
+        if not error_text:
+            result = getattr(message, "result", None)
+            if isinstance(result, str) and result.strip():
+                error_text = result.strip()
+        if not error_text and last_api_error_text:
+            error_text = last_api_error_text
+        api_error_status = getattr(message, "api_error_status", None)
+        if not error_text and api_error_status is not None:
+            error_text = f"API request failed with HTTP {api_error_status}."
+        if not error_text:
+            subtype = getattr(message, "subtype", None) or "unknown"
+            error_text = f"Claude Code returned error result subtype `{subtype}`."
+        return f"Planner agent error: {error_text}"
+
+    @staticmethod
     def _is_report_only_task(title: str) -> bool:
         normalized = " ".join(title.lower().split())
         return normalized.startswith(AgentTaskPlanner.REPORT_ONLY_TITLES)
+
+    @staticmethod
+    def _filter_unrequested_optional_tasks(
+        planned_tasks: list[PlannedTask],
+        prompt: str,
+    ) -> list[PlannedTask]:
+        allow_testing = AgentTaskPlanner._prompt_requests_testing(prompt)
+        allow_publish = AgentTaskPlanner._prompt_requests_publish(prompt)
+        filtered: list[PlannedTask] = []
+        for task in planned_tasks:
+            text = " ".join(
+                [
+                    task.title,
+                    task.description,
+                    " ".join(task.acceptance_criteria),
+                ]
+            ).lower()
+            if not allow_testing and AgentTaskPlanner._looks_like_test_only_task(text):
+                continue
+            if not allow_publish and AgentTaskPlanner._looks_like_publish_task(text):
+                continue
+            filtered.append(task)
+        if not filtered:
+            raise ValueError("Planner returned only unrequested optional tasks.")
+        return filtered
+
+    @staticmethod
+    def _prompt_requests_testing(prompt: str) -> bool:
+        text = " ".join(prompt.lower().split())
+        testing_patterns = (
+            r"\b(add|write|create|include|run|execute)\s+(unit\s+)?tests?\b",
+            r"\bwith\s+(unit\s+)?tests?\b",
+            r"\bunit\s+tests?\b",
+            r"\bunittest\b",
+            r"\bpytest\b",
+            r"\bcoverage\b",
+            r"\btesting\b",
+        )
+        return any(re.search(pattern, text) for pattern in testing_patterns)
+
+    @staticmethod
+    def _prompt_requests_publish(prompt: str) -> bool:
+        text = " ".join(prompt.lower().split())
+        publish_patterns = (
+            r"\bcommit\b",
+            r"\bpush\b",
+            r"\bpull\s+request\b",
+            r"\bopen\s+(a\s+)?pr\b",
+            r"\bcreate\s+(a\s+)?pr\b",
+            r"\bmerge\s+request\b",
+            r"\bpublish\b",
+        )
+        return any(re.search(pattern, text) for pattern in publish_patterns)
+
+    @staticmethod
+    def _looks_like_test_only_task(text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(add|write|create|include|run|execute)\s+(unit\s+)?tests?\b",
+                text,
+            )
+            or re.search(r"\bwith\s+(unit\s+)?tests?\b", text)
+            or re.search(r"\bunittest\b|\bpytest\b|\bcoverage\b", text)
+        )
+
+    @staticmethod
+    def _looks_like_publish_task(text: str) -> bool:
+        return bool(
+            re.search(r"\bcommit\b|\bpush\b|\bpull\s+request\b", text)
+            or re.search(r"\b(open|create)\s+(a\s+)?pr\b", text)
+            or re.search(r"\bpublish\b|\bmerge\s+request\b", text)
+        )
 
     @staticmethod
     def _task_schema() -> dict[str, Any]:
@@ -187,6 +295,9 @@ User request:
 Planning rules:
 - Include repository, testing, Git, and pull-request tasks when the user asks
   for those outcomes.
+- Do not add standalone testing, commit, push, or pull-request tasks unless the
+  user explicitly asks for those outcomes. For example, a branch named `test`
+  is just a branch name, not a request to add tests.
 - The implementation agent has controlled coding MCP tools that operate inside
   a Sandbox Layer for file inspection and edits, GitHub repository operations,
   Python unittest, commits, pushes, and pull requests.

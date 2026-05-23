@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -32,7 +32,6 @@ class TaskAttemptRecord:
     attempt_no: int
     status: str
     claude_session_id: str | None = None
-    resume_from_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +39,8 @@ class AgentTaskResult:
     status: str
     summary: str
     claude_session_id: str | None = None
+    criteria_results: list[dict[str, str]] = field(default_factory=list)
+    verification: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

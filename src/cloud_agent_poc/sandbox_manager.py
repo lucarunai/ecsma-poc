@@ -14,7 +14,6 @@ from .config import Settings
 from .sandbox_protocol import SandboxRuntimeMetadata, ToolExecutionEnvelope
 from .sandbox_protocol import ToolExecutionRequest
 from .sandbox_runtime import execute_runtime_request
-from .sandbox_tools import GITHUB_SECRET_TOOLS
 
 
 class SandboxManagerError(RuntimeError):
@@ -48,6 +47,7 @@ class DirectToolExecutionRunner(ToolExecutionRunner):
             workspace_path=workspace_path,
         )
         envelope.runtime.duration_ms = _duration_ms(started)
+        envelope.runtime.type = "direct"
         envelope.runtime.pod_phase = "Direct"
         return envelope
 
@@ -81,6 +81,7 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                     logs = await self._read_logs(client, pod_name)
                     envelope = _parse_runtime_envelope(logs, request)
                     envelope.runtime = SandboxRuntimeMetadata(
+                        type="sandbox_pod",
                         pod_name=pod_name,
                         pod_phase=phase,
                         exit_code=exit_code,
@@ -168,18 +169,6 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
             {"name": "GIT_AUTHOR_NAME", "value": self.settings.git_author_name},
             {"name": "GIT_AUTHOR_EMAIL", "value": self.settings.git_author_email},
         ]
-        if request.tool_name in GITHUB_SECRET_TOOLS:
-            env.append(
-                {
-                    "name": "GITHUB_TOKEN",
-                    "valueFrom": {
-                        "secretKeyRef": {
-                            "name": self.settings.sandbox_github_secret_name,
-                            "key": self.settings.sandbox_github_secret_key,
-                        }
-                    },
-                }
-            )
         return {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -275,6 +264,7 @@ def _runtime_failure_envelope(
         execution_status="failed",
         failure_message=failure_message,
         runtime=SandboxRuntimeMetadata(
+            type="sandbox_pod",
             pod_name=pod_name,
             pod_phase="Unknown",
             duration_ms=duration_ms,

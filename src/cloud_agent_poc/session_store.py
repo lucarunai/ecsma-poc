@@ -199,7 +199,6 @@ class PostgresSessionStore:
         *,
         run_id: str,
         task_id: str,
-        resume_from_session_id: str | None,
     ) -> TaskAttemptRecord:
         attempt_id = f"taskattempt_{uuid4().hex}"
         async with await psycopg.AsyncConnection.connect(
@@ -209,14 +208,14 @@ class PostgresSessionStore:
             cursor = await conn.execute(
                 """
                 INSERT INTO task_attempts
-                    (id, run_id, task_id, attempt_no, status, resume_from_session_id)
-                SELECT %s, %s, %s, COALESCE(MAX(attempt_no), 0) + 1, 'running', %s
+                    (id, run_id, task_id, attempt_no, status)
+                SELECT %s, %s, %s, COALESCE(MAX(attempt_no), 0) + 1, 'running'
                 FROM task_attempts
                 WHERE task_id = %s
                 RETURNING id, run_id, task_id, attempt_no, status,
-                          claude_session_id, resume_from_session_id
+                          claude_session_id
                 """,
-                (attempt_id, run_id, task_id, resume_from_session_id, task_id),
+                (attempt_id, run_id, task_id, task_id),
             )
             row = await cursor.fetchone()
         if row is None:
@@ -347,7 +346,7 @@ class PostgresSessionStore:
             attempt_cursor = await conn.execute(
                 """
                 SELECT id, run_id, task_id, attempt_no, status, claude_session_id,
-                       resume_from_session_id, failure_reason
+                       failure_reason
                 FROM task_attempts
                 WHERE run_id = %s
                 ORDER BY created_at DESC
@@ -366,13 +365,28 @@ class PostgresSessionStore:
                 """,
                 (run_id,),
             )
+            handoff_cursor = await conn.execute(
+                """
+                SELECT task_handoffs.id, task_handoffs.from_task_id,
+                       task_handoffs.to_task_id, task_handoffs.status,
+                       task_handoffs.summary, task_handoffs.payload,
+                       task_handoffs.created_at
+                FROM task_handoffs
+                WHERE task_handoffs.run_id = %s
+                ORDER BY task_handoffs.created_at ASC
+                LIMIT 24
+                """,
+                (run_id,),
+            )
             attempts = await attempt_cursor.fetchall()
             tool_calls = await tool_cursor.fetchall()
+            handoffs = await handoff_cursor.fetchall()
         return {
             "run": run,
             "tasks": [task.__dict__ for task in tasks],
             "task_attempts": attempts,
             "tool_calls": tool_calls,
+            "task_handoffs": handoffs,
         }
 
     async def append_event(
@@ -447,8 +461,8 @@ class PostgresSessionStore:
         to_task_id: str | None = None,
         status: str,
         summary: str,
+        payload: dict[str, Any],
         claude_session_id: str | None = None,
-        next_resume_session_id: str | None = None,
         transcript_id: str | None = None,
     ) -> int:
         async with await psycopg.AsyncConnection.connect(
@@ -459,10 +473,9 @@ class PostgresSessionStore:
                 """
                 INSERT INTO task_handoffs
                     (session_id, run_id, from_task_id, to_task_id, status,
-                     summary, claude_session_id, next_resume_session_id,
-                     transcript_id)
+                     summary, payload, claude_session_id, transcript_id)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -472,8 +485,8 @@ class PostgresSessionStore:
                     to_task_id,
                     status,
                     summary,
+                    json.dumps(payload),
                     claude_session_id,
-                    next_resume_session_id,
                     transcript_id,
                 ),
             )

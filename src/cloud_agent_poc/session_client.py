@@ -120,14 +120,12 @@ class SessionLayerClient:
         *,
         run_id: str,
         task_id: str,
-        resume_from_session_id: str | None,
     ) -> TaskAttemptRecord:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.post(
                 f"/internal/tasks/{task_id}/attempts",
                 json={
                     "run_id": run_id,
-                    "resume_from_session_id": resume_from_session_id,
                 },
             )
             response.raise_for_status()
@@ -259,8 +257,8 @@ class SessionLayerClient:
         to_task_id: str | None = None,
         status: str,
         summary: str,
+        payload: dict[str, Any],
         claude_session_id: str | None = None,
-        next_resume_session_id: str | None = None,
         transcript_id: str | None = None,
     ) -> int:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
@@ -273,8 +271,8 @@ class SessionLayerClient:
                     "to_task_id": to_task_id,
                     "status": status,
                     "summary": summary,
+                    "payload": payload,
                     "claude_session_id": claude_session_id,
-                    "next_resume_session_id": next_resume_session_id,
                     "transcript_id": transcript_id,
                 },
             )

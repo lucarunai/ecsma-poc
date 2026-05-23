@@ -11,7 +11,11 @@ from cloud_agent_poc.sandbox_protocol import (
 
 
 class SandboxStub:
+    def __init__(self) -> None:
+        self.executed_tools = []
+
     async def execute_tool(self, run_id, tool_name, args, **_):
+        self.executed_tools.append(tool_name)
         return ToolExecutionEnvelope(
             execution_id="sbxexec_test",
             run_id=run_id,
@@ -28,6 +32,30 @@ class SandboxStub:
                 pod_phase="Succeeded",
                 exit_code=0,
                 duration_ms=12,
+            ),
+        )
+
+
+class BrokerStub:
+    def __init__(self) -> None:
+        self.executed_tools = []
+
+    async def execute_tool(self, run_id, tool_name, args, **_):
+        self.executed_tools.append(tool_name)
+        return ToolExecutionEnvelope(
+            execution_id="sbxexec_broker",
+            run_id=run_id,
+            tool_call_id="toolcall_test",
+            tool_name=tool_name,
+            execution_status="succeeded",
+            tool_result=SandboxToolResult(
+                ok=True,
+                summary="Repository cloned.",
+                data={"summary": "Repository cloned."},
+            ),
+            runtime=SandboxRuntimeMetadata(
+                type="trusted_github_executor",
+                duration_ms=10,
             ),
         )
 
@@ -72,6 +100,27 @@ class ToolErrorSandboxStub(SandboxStub):
         )
 
 
+class ToolErrorBrokerStub(BrokerStub):
+    async def execute_tool(self, run_id, tool_name, args, **_):
+        self.executed_tools.append(tool_name)
+        return ToolExecutionEnvelope(
+            execution_id="sbxexec_failed",
+            run_id=run_id,
+            tool_call_id="toolcall_test",
+            tool_name=tool_name,
+            execution_status="succeeded",
+            tool_result=SandboxToolResult(
+                ok=False,
+                summary="Git clone failed.",
+                data={"error": "Git clone failed."},
+            ),
+            runtime=SandboxRuntimeMetadata(
+                type="trusted_github_executor",
+                duration_ms=16,
+            ),
+        )
+
+
 class RuntimeErrorSandboxStub(SandboxStub):
     async def execute_tool(self, run_id, tool_name, args, **_):
         return ToolExecutionEnvelope(
@@ -95,7 +144,9 @@ class CodingToolExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_execution_is_recorded_and_emitted_for_task(self) -> None:
         store = StoreStub()
         events = []
-        factory = CodingToolServerFactory(SandboxStub(), store)
+        sandbox = SandboxStub()
+        broker = BrokerStub()
+        factory = CodingToolServerFactory(sandbox, broker, store)
         task = TaskRecord(
             id="task_test",
             run_id="run_0123456789abcdef0123456789abcdef",
@@ -127,11 +178,15 @@ class CodingToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[1][0], "tool.execution")
         self.assertEqual(events[1][1]["task_id"], task.id)
         self.assertEqual(events[1][1]["execution"]["tool_name"], "read_workspace_file")
+        self.assertEqual(sandbox.executed_tools, ["read_workspace_file"])
+        self.assertEqual(broker.executed_tools, [])
 
     async def test_tool_error_is_recorded_before_returning_to_agent(self) -> None:
         store = StoreStub()
         events = []
-        factory = CodingToolServerFactory(ToolErrorSandboxStub(), store)
+        sandbox = SandboxStub()
+        broker = ToolErrorBrokerStub()
+        factory = CodingToolServerFactory(sandbox, broker, store)
         task = TaskRecord(
             id="task_test",
             run_id="run_0123456789abcdef0123456789abcdef",
@@ -152,20 +207,23 @@ class CodingToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 task,
                 emit,
                 "clone_github_repository",
-                {"path": "."},
+                {"repository_url": "https://github.com/lucarunai/demo", "source_branch": "test"},
                 task_attempt_id="attempt_test",
             )
 
         self.assertEqual(store.calls[0]["failure_kind"], "tool_error")
+        self.assertEqual(store.calls[0]["envelope"]["runtime"]["type"], "trusted_github_executor")
         self.assertEqual(store.tool_call_updates[0][1], "failed")
         self.assertEqual(store.tool_call_updates[0][2]["failure_kind"], "tool_error")
         self.assertEqual(events[1][0], "tool.execution")
         self.assertEqual(events[1][1]["failure_kind"], "tool_error")
+        self.assertEqual(sandbox.executed_tools, [])
+        self.assertEqual(broker.executed_tools, ["clone_github_repository"])
 
     async def test_runtime_failure_envelope_is_recorded_before_raising(self) -> None:
         store = StoreStub()
         events = []
-        factory = CodingToolServerFactory(RuntimeErrorSandboxStub(), store)
+        factory = CodingToolServerFactory(RuntimeErrorSandboxStub(), BrokerStub(), store)
         task = TaskRecord(
             id="task_test",
             run_id="run_0123456789abcdef0123456789abcdef",

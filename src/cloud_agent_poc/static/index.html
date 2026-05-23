@@ -498,6 +498,7 @@
                 toolStatus.textContent = tool.status;
                 toolStatus.classList.add(tool.status);
                 const runtimeText = [
+                  runtime.type ? `runtime ${runtime.type}` : null,
                   tool.failure_kind ? `failure ${tool.failure_kind}` : null,
                   runtime.pod_name ? `pod ${runtime.pod_name}` : null,
                   runtime.pod_phase ? `phase ${runtime.pod_phase}` : null,
@@ -553,7 +554,8 @@
           return;
         }
 
-        const taskId = event.payload.task_id;
+        const fromTask = event.payload.from_task || {};
+        const taskId = event.payload.task_id || fromTask.id;
         if (event.event_type === "task.handoff" && !event.payload.status) {
           return;
         }
@@ -561,8 +563,8 @@
         const existing = taskId ? tasks.get(taskId) : null;
         const task = existing || {
           id: taskId || `${event.payload.seq}-${event.payload.title}`,
-          seq: event.payload.seq || tasks.size + 1,
-          title: event.payload.title || "Task",
+          seq: event.payload.seq || fromTask.seq || tasks.size + 1,
+          title: event.payload.title || fromTask.title || "Task",
           status: "pending",
           tools: new Map(),
         };

@@ -10,6 +10,7 @@ class Settings:
     database_url: str
     session_layer_url: str
     sandbox_layer_url: str
+    github_broker_url: str
     github_repo_url: str
     github_source_branch: str
     github_target_branch: str
@@ -23,8 +24,6 @@ class Settings:
     sandbox_runtime_image: str
     sandbox_tool_timeout_seconds: int
     sandbox_workspace_claim: str
-    sandbox_github_secret_name: str
-    sandbox_github_secret_key: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -40,6 +39,10 @@ class Settings:
             sandbox_layer_url=os.getenv(
                 "SANDBOX_LAYER_URL",
                 "http://localhost:8003",
+            ).rstrip("/"),
+            github_broker_url=os.getenv(
+                "GITHUB_BROKER_URL",
+                "http://localhost:8004",
             ).rstrip("/"),
             github_repo_url=os.getenv(
                 "GITHUB_REPO_URL",
@@ -71,13 +74,5 @@ class Settings:
             sandbox_workspace_claim=os.getenv(
                 "SANDBOX_WORKSPACE_CLAIM",
                 "sandbox-workspaces",
-            ),
-            sandbox_github_secret_name=os.getenv(
-                "SANDBOX_GITHUB_SECRET_NAME",
-                "cloud-agent-poc-secrets",
-            ),
-            sandbox_github_secret_key=os.getenv(
-                "SANDBOX_GITHUB_SECRET_KEY",
-                "GITHUB_TOKEN",
             ),
         )

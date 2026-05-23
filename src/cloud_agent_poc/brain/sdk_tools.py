@@ -4,9 +4,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..domain import TaskRecord
+from ..github_broker_client import GitHubBrokerClient, GitHubBrokerError
 from ..sandbox_client import SandboxLayerClient, SandboxLayerError
 from ..sandbox_protocol import ToolExecutionEnvelope
 from ..session_client import SessionLayerClient
+from ..tool_policy import TRUSTED_GITHUB_TOOLS
 
 EmitToolEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -15,9 +17,11 @@ class CodingToolServerFactory:
     def __init__(
         self,
         sandbox: SandboxLayerClient,
+        github_broker: GitHubBrokerClient,
         store: SessionLayerClient,
     ) -> None:
         self.sandbox = sandbox
+        self.github_broker = github_broker
         self.store = store
 
     def create(
@@ -318,7 +322,7 @@ class CodingToolServerFactory:
 
         @tool(
             "push_current_git_branch",
-            "Push the current Git branch to its GitHub origin using sandbox credentials.",
+            "Push the current Git branch to its GitHub origin using trusted broker credentials.",
             {},
         )
         async def push_current_git_branch(_: dict[str, Any]) -> dict[str, Any]:
@@ -415,17 +419,17 @@ class CodingToolServerFactory:
             },
         )
         try:
-            envelope = await self.sandbox.execute_tool(
-                run_id,
-                tool_name,
-                args,
+            envelope = await self._execute_runtime_tool(
+                run_id=run_id,
+                tool_name=tool_name,
+                args=args,
                 tool_call_id=tool_call_id,
             )
-        except SandboxLayerError:
+        except (SandboxLayerError, GitHubBrokerError):
             await self.store.update_tool_call(
                 tool_call_id,
                 "failed",
-                failure_kind="sandbox_request_error",
+                failure_kind=self._request_failure_kind(tool_name),
                 ended=True,
             )
             await emit(
@@ -435,7 +439,7 @@ class CodingToolServerFactory:
                     "task_attempt_id": task_attempt_id,
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
-                    "failure_kind": "sandbox_request_error",
+                    "failure_kind": self._request_failure_kind(tool_name),
                 },
             )
             raise
@@ -480,6 +484,34 @@ class CodingToolServerFactory:
         if not envelope.tool_result.ok and not allow_tool_error:
             raise SandboxLayerError(envelope.tool_result.summary)
         return envelope
+
+    async def _execute_runtime_tool(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        tool_call_id: str,
+    ) -> ToolExecutionEnvelope:
+        if tool_name in TRUSTED_GITHUB_TOOLS:
+            return await self.github_broker.execute_tool(
+                run_id,
+                tool_name,
+                args,
+                tool_call_id=tool_call_id,
+            )
+        return await self.sandbox.execute_tool(
+            run_id,
+            tool_name,
+            args,
+            tool_call_id=tool_call_id,
+        )
+
+    @staticmethod
+    def _request_failure_kind(tool_name: str) -> str:
+        if tool_name in TRUSTED_GITHUB_TOOLS:
+            return "github_broker_request_error"
+        return "sandbox_request_error"
 
     @staticmethod
     def _data(envelope: ToolExecutionEnvelope) -> dict[str, Any]:

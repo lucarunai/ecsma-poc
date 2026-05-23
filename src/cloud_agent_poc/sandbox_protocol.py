@@ -20,6 +20,7 @@ class SandboxToolResult(BaseModel):
 
 
 class SandboxRuntimeMetadata(BaseModel):
+    type: str | None = None
     pod_name: str | None = None
     pod_phase: str | None = None
     exit_code: int | None = None
@@ -35,4 +36,3 @@ class ToolExecutionEnvelope(BaseModel):
     tool_result: SandboxToolResult | None = None
     failure_message: str | None = None
     runtime: SandboxRuntimeMetadata = Field(default_factory=SandboxRuntimeMetadata)
-

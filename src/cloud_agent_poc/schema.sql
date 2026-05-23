@@ -67,11 +67,14 @@ CREATE TABLE IF NOT EXISTS task_handoffs (
     to_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     status TEXT NOT NULL,
     summary TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     claude_session_id TEXT,
-    next_resume_session_id TEXT,
     transcript_id TEXT REFERENCES agent_transcripts(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE task_handoffs
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS task_attempts (
     id TEXT PRIMARY KEY,
@@ -80,7 +83,6 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     attempt_no INTEGER NOT NULL,
     status TEXT NOT NULL,
     claude_session_id TEXT,
-    resume_from_session_id TEXT,
     failure_reason TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ended_at TIMESTAMPTZ,

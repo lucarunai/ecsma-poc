@@ -7,12 +7,11 @@ data:
   DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ecsma_poc
   SESSION_LAYER_URL: http://cloud-agent-session:8000
   SANDBOX_LAYER_URL: http://cloud-agent-sandbox:8000
+  GITHUB_BROKER_URL: http://cloud-agent-github-broker:8000
   SANDBOX_EXECUTION_MODE: kubernetes
   SANDBOX_RUNTIME_IMAGE: cloud-agent-poc:local
   SANDBOX_TOOL_TIMEOUT_SECONDS: "180"
   SANDBOX_WORKSPACE_CLAIM: sandbox-workspaces
-  SANDBOX_GITHUB_SECRET_NAME: cloud-agent-poc-secrets
-  SANDBOX_GITHUB_SECRET_KEY: GITHUB_TOKEN
   GITHUB_REPO_URL: https://github.com/lucarunai/demo.git
   GITHUB_SOURCE_BRANCH: test
   GITHUB_TARGET_BRANCH: main
