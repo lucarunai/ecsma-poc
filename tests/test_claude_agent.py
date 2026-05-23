@@ -6,6 +6,16 @@ from cloud_agent_poc.domain import TaskRecord
 
 
 class ClaudeCodingAgentTests(unittest.TestCase):
+    def test_criteria_status_schema_uses_passed_not_passing(self) -> None:
+        schema = ClaudeCodingAgent._task_result_schema()
+
+        enum = schema["properties"]["criteria_results"]["items"]["properties"][
+            "status"
+        ]["enum"]
+
+        self.assertEqual(enum, ["passed", "failing", "not_verified", "blocked"])
+        self.assertNotIn("passing", enum)
+
     def test_parses_blocked_task_result(self) -> None:
         result = ClaudeCodingAgent.parse_task_result(
             {
@@ -40,6 +50,34 @@ class ClaudeCodingAgentTests(unittest.TestCase):
             result.verification["commands_run"][0]["tool"],
             "checkout_git_branch",
         )
+
+    def test_legacy_passing_criteria_status_is_normalized_to_passed(self) -> None:
+        result = ClaudeCodingAgent.parse_task_result(
+            {
+                "status": "completed",
+                "summary": "Repository cloned.",
+                "criteria_results": [
+                    {
+                        "criterion": "Repository is cloned.",
+                        "status": "passing",
+                        "evidence": "git status confirmed the checkout.",
+                    }
+                ],
+                "verification": {"commands_run": [{"tool": "git_status", "result": "success"}]},
+            },
+            task=TaskRecord(
+                id="task_1",
+                run_id="run",
+                seq=1,
+                kind="model_task",
+                title="Clone repo",
+                description="Clone a repository.",
+                acceptance_criteria=["Repository is cloned."],
+                status="pending",
+            ),
+        )
+
+        self.assertEqual(result.criteria_results[0]["status"], "passed")
 
     def test_rejects_unknown_task_status(self) -> None:
         with self.assertRaises(ValueError):
@@ -89,36 +127,93 @@ class ClaudeCodingAgentTests(unittest.TestCase):
         self.assertIn("Durable handoff context", prompt)
         self.assertIn("Run acceptance criteria (global constitution)", prompt)
         self.assertIn('"acceptance_criteria": [', prompt)
+        self.assertIn('"task_id": "task_1"', prompt)
+        self.assertIn('"task_id": "task_2"', prompt)
         self.assertIn('"previous_task_detail"', prompt)
         self.assertIn('"summary": "Repository cloned."', prompt)
         self.assertIn("fresh model session", prompt)
 
     def test_completed_task_requires_all_criteria_passed(self) -> None:
-        with self.assertRaisesRegex(ValueError, "before all acceptance criteria passed"):
-            ClaudeCodingAgent.parse_task_result(
-                {
-                    "status": "completed",
-                    "summary": "Done.",
-                    "criteria_results": [
+        task = TaskRecord(
+            id="task_1",
+            run_id="run",
+            seq=1,
+            kind="model_task",
+            title="Create app",
+            description="Add hello.py.",
+            acceptance_criteria=["hello.py exists."],
+            status="pending",
+        )
+        for criterion_status in ("not_verified", "failing", "blocked"):
+            with self.subTest(criterion_status=criterion_status):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "before all acceptance criteria passed",
+                ):
+                    ClaudeCodingAgent.parse_task_result(
                         {
-                            "criterion": "hello.py exists.",
-                            "status": "not_verified",
-                            "evidence": "No file inspection was run.",
+                            "status": "completed",
+                            "summary": "Done.",
+                            "criteria_results": [
+                                {
+                                    "criterion": "hello.py exists.",
+                                    "status": criterion_status,
+                                    "evidence": "The criterion did not pass.",
+                                }
+                            ],
+                            "verification": {"notes": "No verification passed."},
+                        },
+                        task=task,
+                    )
+
+    def test_prompt_does_not_require_handoff_to_carry_run_criteria(self) -> None:
+        prompt = ClaudeCodingAgent._implementation_prompt(
+            "Create a branch.",
+            TaskRecord(
+                id="task_2",
+                run_id="run",
+                seq=2,
+                kind="model_task",
+                title="Create branch",
+                description="Create test-100.",
+                acceptance_criteria=["Branch test-100 exists."],
+                status="pending",
+            ),
+            [
+                {
+                    "schema_version": "task_handoff.v1",
+                    "from_task": {"id": "task_1", "seq": 1, "title": "Clone repo"},
+                    "planned_task_results": [
+                        {
+                            "task_id": "task_1",
+                            "task_seq": 1,
+                            "title": "Clone repo",
+                            "status": "passed",
                         }
                     ],
-                    "verification": {"notes": "No verification was run."},
+                    "summary": "Repository cloned.",
+                    "status": "completed",
+                }
+            ],
+            [
+                {
+                    "task_id": "task_1",
+                    "task_seq": 1,
+                    "title": "Clone repo",
+                    "acceptance_criteria": ["Repository cloned."],
                 },
-                task=TaskRecord(
-                    id="task_1",
-                    run_id="run",
-                    seq=1,
-                    kind="model_task",
-                    title="Create app",
-                    description="Add hello.py.",
-                    acceptance_criteria=["hello.py exists."],
-                    status="pending",
-                ),
-            )
+                {
+                    "task_id": "task_2",
+                    "task_seq": 2,
+                    "title": "Create branch",
+                    "acceptance_criteria": ["Branch test-100 exists."],
+                },
+            ],
+        )
+
+        self.assertIn("Run acceptance criteria (global constitution)", prompt)
+        self.assertIn('"Branch test-100 exists."', prompt)
+        self.assertNotIn('"run_acceptance_criteria"', prompt)
 
     def test_criteria_results_must_match_task_criteria_order(self) -> None:
         with self.assertRaisesRegex(ValueError, "must match acceptance criteria order"):

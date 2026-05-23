@@ -1,3 +1,5 @@
+import base64
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -98,6 +100,54 @@ class SandboxPodManifestTests(unittest.TestCase):
             "/workspace/run_0123456789abcdef0123456789abcdef",
         )
 
+    def test_sandbox_tool_pod_disables_service_account_token(self) -> None:
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+
+        manifest = runner._pod_manifest(
+            "sandbox-tool-file",
+            ToolExecutionRequest(
+                run_id="run_0123456789abcdef0123456789abcdef",
+                tool_call_id="toolcall_file",
+                tool_name="read_workspace_file",
+                args={"path": "README.md"},
+                execution_id="sbxexec_file",
+            ),
+        )
+
+        self.assertIs(manifest["spec"]["automountServiceAccountToken"], False)
+        self.assertEqual(manifest["spec"]["restartPolicy"], "Never")
+
+    def test_sandbox_tool_request_is_encoded_in_environment(self) -> None:
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+
+        manifest = runner._pod_manifest(
+            "sandbox-tool-write",
+            ToolExecutionRequest(
+                run_id="run_0123456789abcdef0123456789abcdef",
+                tool_call_id="toolcall_write",
+                tool_name="write_workspace_file",
+                args={"path": "hello.py", "content": "print('hello')\n"},
+                execution_id="sbxexec_write",
+            ),
+        )
+
+        env = {
+            item["name"]: item["value"]
+            for item in manifest["spec"]["containers"][0]["env"]
+            if "value" in item
+        }
+        decoded_request = json.loads(
+            base64.b64decode(env["SANDBOX_TOOL_REQUEST_B64"]).decode()
+        )
+
+        self.assertEqual(decoded_request["tool_name"], "write_workspace_file")
+        self.assertEqual(decoded_request["run_id"], "run_0123456789abcdef0123456789abcdef")
+        self.assertEqual(decoded_request["args"]["path"], "hello.py")
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
 
 class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_kubernetes_runner_returns_failed_envelope_when_pod_disappears(self) -> None:
@@ -144,6 +194,7 @@ class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope.execution_id, "sbxexec_crash")
         self.assertEqual(envelope.runtime.pod_name, "sandbox-tool-crash")
         self.assertEqual(envelope.runtime.pod_phase, "Unknown")
+        self.assertIsNotNone(envelope.runtime.duration_ms)
         self.assertIn("HTTP 404", envelope.failure_message or "")
         self.assertEqual(deleted_pods, ["sandbox-tool-crash"])
 

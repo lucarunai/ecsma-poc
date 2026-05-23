@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#173b7a"/>
+    </marker>
+    <style>
+      .bg { fill: url(#bg); }
+      .title { font-family: Inter, Arial, sans-serif; font-size: 30px; font-weight: 850; fill: #0b1b3a; }
+      .subtitle { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #183153; }
+      .table { fill: rgba(255,255,255,0.9); stroke: #1d4ed8; stroke-width: 1.4; rx: 12; filter: url(#shadow); }
+      .head { fill: #eaf2ff; stroke: #1d4ed8; stroke-width: 1.4; }
+      .greenHead { fill: #dcfce7; stroke: #059669; }
+      .orangeHead { fill: #ffedd5; stroke: #f59e0b; }
+      .purpleHead { fill: #ede9fe; stroke: #7c3aed; }
+      .redHead { fill: #ffe4e6; stroke: #ef4444; }
+      .name { font-family: Inter, Arial, sans-serif; font-size: 15px; font-weight: 850; fill: #0b1b3a; text-anchor: middle; }
+      .field { font-family: Inter, Arial, sans-serif; font-size: 11px; fill: #0f172a; }
+      .pk { font-weight: 800; fill: #173b7a; }
+      .json { fill: #047857; font-weight: 800; }
+      .line { stroke: #173b7a; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .soft { stroke: #64748b; stroke-width: 1.6; stroke-dasharray: 6 5; fill: none; marker-end: url(#arrow); }
+      .note { font-family: Inter, Arial, sans-serif; font-size: 10px; fill: #075985; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="960"/>
+  <text class="title" x="26" y="42">Database Core Fields - Durable Agent State Model</text>
+  <text class="subtitle" x="26" y="68">Postgres is the source of truth for run progress, criteria, tool execution evidence, handoff, recovery, and audit.</text>
+
+  <!-- sessions -->
+  <g transform="translate(70,120)">
+    <rect class="table" width="210" height="130"/>
+    <rect class="head" width="210" height="36" rx="12"/>
+    <text class="name" x="105" y="24">sessions</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">title</text>
+    <text class="field" x="18" y="98">status</text>
+    <text class="field" x="18" y="118">created_at / updated_at</text>
+  </g>
+
+  <!-- runs -->
+  <g transform="translate(355,105)">
+    <rect class="table" width="270" height="185"/>
+    <rect class="head greenHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">runs</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">FK session_id</text>
+    <text class="field" x="18" y="98">prompt</text>
+    <text class="field" x="18" y="118">status</text>
+    <text class="field json" x="18" y="138">acceptance_criteria JSONB</text>
+    <text class="field" x="18" y="158">metadata JSONB / error_message</text>
+    <text class="field" x="18" y="178">started_at / ended_at</text>
+  </g>
+
+  <!-- tasks -->
+  <g transform="translate(710,105)">
+    <rect class="table" width="270" height="205"/>
+    <rect class="head greenHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">tasks</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">FK run_id</text>
+    <text class="field" x="18" y="98">seq / kind</text>
+    <text class="field" x="18" y="118">title</text>
+    <text class="field" x="18" y="138">description</text>
+    <text class="field json" x="18" y="158">acceptance_criteria JSONB</text>
+    <text class="field" x="18" y="178">status / result_summary</text>
+    <text class="field" x="18" y="198">started_at / ended_at</text>
+  </g>
+
+  <!-- events -->
+  <g transform="translate(1070,120)">
+    <rect class="table" width="250" height="145"/>
+    <rect class="head" width="250" height="36" rx="12"/>
+    <text class="name" x="125" y="24">session_events</text>
+    <text class="field pk" x="18" y="58">PK id BIGSERIAL</text>
+    <text class="field" x="18" y="78">FK session_id / run_id / task_id</text>
+    <text class="field" x="18" y="98">event_type</text>
+    <text class="field json" x="18" y="118">payload JSONB</text>
+    <text class="field" x="18" y="138">created_at</text>
+  </g>
+
+  <!-- attempts -->
+  <g transform="translate(355,380)">
+    <rect class="table" width="270" height="165"/>
+    <rect class="head orangeHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">task_attempts</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">FK run_id / task_id</text>
+    <text class="field" x="18" y="98">attempt_no</text>
+    <text class="field" x="18" y="118">status</text>
+    <text class="field" x="18" y="138">claude_session_id</text>
+    <text class="field" x="18" y="158">failure_reason / timestamps</text>
+  </g>
+
+  <!-- tool_calls -->
+  <g transform="translate(710,380)">
+    <rect class="table" width="270" height="185"/>
+    <rect class="head purpleHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">tool_calls</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">FK run_id / task_id</text>
+    <text class="field" x="18" y="98">FK task_attempt_id</text>
+    <text class="field" x="18" y="118">tool_name</text>
+    <text class="field json" x="18" y="138">input JSONB</text>
+    <text class="field" x="18" y="158">status / failure_kind</text>
+    <text class="field" x="18" y="178">latest_execution_id</text>
+  </g>
+
+  <!-- executions -->
+  <g transform="translate(1070,380)">
+    <rect class="table" width="270" height="185"/>
+    <rect class="head purpleHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">tool_executions</text>
+    <text class="field pk" x="18" y="58">PK execution_id</text>
+    <text class="field" x="18" y="78">FK run_id / task_id</text>
+    <text class="field" x="18" y="98">FK task_attempt_id</text>
+    <text class="field" x="18" y="118">tool_call_id / tool_name</text>
+    <text class="field" x="18" y="138">execution_status</text>
+    <text class="field" x="18" y="158">failure_kind</text>
+    <text class="field json" x="18" y="178">envelope JSONB</text>
+  </g>
+
+  <!-- handoffs -->
+  <g transform="translate(355,650)">
+    <rect class="table" width="270" height="170"/>
+    <rect class="head orangeHead" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">task_handoffs</text>
+    <text class="field pk" x="18" y="58">PK id BIGSERIAL</text>
+    <text class="field" x="18" y="78">FK session_id / run_id</text>
+    <text class="field" x="18" y="98">from_task_id / to_task_id</text>
+    <text class="field" x="18" y="118">status / summary</text>
+    <text class="field json" x="18" y="138">payload JSONB</text>
+    <text class="field" x="18" y="158">claude_session_id / transcript_id</text>
+  </g>
+
+  <!-- transcripts -->
+  <g transform="translate(710,650)">
+    <rect class="table" width="270" height="170"/>
+    <rect class="head" width="270" height="36" rx="12"/>
+    <text class="name" x="135" y="24">agent_transcripts</text>
+    <text class="field pk" x="18" y="58">PK id</text>
+    <text class="field" x="18" y="78">FK run_id / task_id</text>
+    <text class="field" x="18" y="98">provider</text>
+    <text class="field" x="18" y="118">provider_session_id</text>
+    <text class="field" x="18" y="138">artifact_path</text>
+    <text class="field" x="18" y="158">checksum / size_bytes</text>
+  </g>
+
+  <!-- recovery bundle -->
+  <g transform="translate(1070,665)">
+    <rect class="table" width="300" height="135" stroke-dasharray="8 5"/>
+    <rect class="head redHead" width="300" height="36" rx="12"/>
+    <text class="name" x="150" y="24">Recovery Bundle View</text>
+    <text class="field" x="18" y="60">run.acceptance_criteria</text>
+    <text class="field" x="18" y="82">tasks sorted by seq</text>
+    <text class="field" x="18" y="104">recent attempts / failed tool_calls</text>
+    <text class="field" x="18" y="126">task_handoffs payloads</text>
+  </g>
+
+  <!-- Relations -->
+  <path class="line" d="M280 185 L355 185"/>
+  <text class="note" x="316" y="172">1:N</text>
+  <path class="line" d="M625 198 L710 198"/>
+  <text class="note" x="667" y="185">1:N</text>
+  <path class="line" d="M845 310 L505 380"/>
+  <text class="note" x="638" y="336">task attempts</text>
+  <path class="line" d="M845 310 L845 380"/>
+  <text class="note" x="887" y="350">tool calls</text>
+  <path class="line" d="M980 472 L1070 472"/>
+  <text class="note" x="1025" y="456">exec audit</text>
+  <path class="line" d="M845 310 L505 650"/>
+  <text class="note" x="596" y="617">handoff</text>
+  <path class="line" d="M845 310 L845 650"/>
+  <text class="note" x="892" y="617">transcript</text>
+  <path class="line" d="M625 198 C840 100 1030 120 1070 178"/>
+  <text class="note" x="920" y="120">events for SSE</text>
+  <path class="soft" d="M490 820 C720 900 1140 860 1215 800"/>
+  <path class="soft" d="M845 565 C960 620 1110 648 1210 665"/>
+  <path class="soft" d="M1205 565 L1215 665"/>
+
+  <rect class="table" x="70" y="665" width="210" height="145"/>
+  <rect class="head greenHead" x="70" y="665" width="210" height="36" rx="12"/>
+  <text class="name" x="175" y="689">Status Vocabulary</text>
+  <text class="field" x="90" y="722">runs: queued / running</text>
+  <text class="field" x="90" y="742">resume_queued / completed</text>
+  <text class="field" x="90" y="762">blocked / failed</text>
+  <text class="field" x="90" y="786">criteria: passed / failing</text>
+  <text class="field" x="90" y="806">not_verified / blocked</text>
+</svg>

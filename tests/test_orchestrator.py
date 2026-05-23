@@ -284,6 +284,41 @@ class RecoveryStore(RecordingStore):
         }
 
 
+class RunCriteriaRecoveryStore(RecordingStore):
+    async def get_run_recovery_bundle(self, _: str):
+        return {
+            "run": {
+                "metadata": {
+                    "workspace_path": "/tmp/resume-run",
+                },
+                "acceptance_criteria": [
+                    {
+                        "task_id": "task_resume",
+                        "task_seq": 1,
+                        "title": "Resume task",
+                        "description": "Resume with criteria from the run row.",
+                        "acceptance_criteria": ["Run row criterion."],
+                    }
+                ],
+            },
+            "tasks": [
+                TaskRecord(
+                    id="task_resume",
+                    run_id="run",
+                    seq=1,
+                    kind="model_task",
+                    title="Resume task",
+                    description="Resume with criteria from the task row.",
+                    acceptance_criteria=["Task row criterion."],
+                    status="resume_queued",
+                ).__dict__,
+            ],
+            "task_attempts": [],
+            "tool_calls": [],
+            "task_handoffs": [],
+        }
+
+
 class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
     async def test_blocked_task_stops_following_tasks(self) -> None:
         store = RecordingStore()
@@ -311,6 +346,41 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run.blocked", [event_type for event_type, _ in store.events])
         self.assertNotIn("run.completed", [event_type for event_type, _ in store.events])
         self.assertEqual(sandbox.deleted_run_ids, [])
+
+    async def test_new_run_persists_and_emits_run_acceptance_criteria(self) -> None:
+        store = RecordingStore()
+        orchestrator = RunOrchestrator(
+            store=store,
+            planner=StaticPlanner(),
+            agent=CompletingAgent(),
+            sandbox=StaticWorkspaceService(),
+        )
+
+        await orchestrator.execute(
+            session_id="session",
+            run_id="run",
+            prompt="Clone a repo and edit it.",
+        )
+
+        persisted_criteria_updates = [
+            kwargs["acceptance_criteria"]
+            for _, status, kwargs in store.run_updates
+            if status == "running" and "acceptance_criteria" in kwargs
+        ]
+        self.assertEqual(len(persisted_criteria_updates), 1)
+        self.assertEqual(persisted_criteria_updates[0][0]["title"], "Clone repo")
+        self.assertEqual(
+            persisted_criteria_updates[0][1]["acceptance_criteria"],
+            ["Code changed."],
+        )
+        tasks_created_events = [
+            payload for event_type, payload in store.events
+            if event_type == "tasks.created"
+        ]
+        self.assertEqual(
+            tasks_created_events[0]["run_acceptance_criteria"],
+            persisted_criteria_updates[0],
+        )
 
     async def test_next_task_receives_previous_task_handoff_json(self) -> None:
         store = RecordingStore()
@@ -346,6 +416,7 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(agent.run_acceptance_criteria[1], agent.run_acceptance_criteria[0])
         self.assertEqual(agent.handoffs[0], [])
+        self.assertEqual(agent.handoffs[1][0]["run_id"], "run")
         self.assertEqual(agent.handoffs[1][0]["from_task"]["id"], "task_1")
         self.assertEqual(agent.handoffs[1][0]["summary"], "task_1 completed.")
         self.assertEqual(agent.handoffs[1][0]["schema_version"], "task_handoff.v1")
@@ -353,6 +424,10 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             agent.handoffs[1][0]["planned_task_results"][0]["title"],
             "Clone repo",
+        )
+        self.assertEqual(
+            agent.handoffs[1][0]["planned_task_results"][0]["description"],
+            "Prepare checkout.",
         )
         self.assertEqual(
             agent.handoffs[1][0]["planned_task_results"][0][
@@ -418,6 +493,28 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("workspace.cleanup_failed", [event_type for event_type, _ in store.events])
         self.assertNotIn("run.failed", [event_type for event_type, _ in store.events])
 
+    async def test_resume_uses_run_acceptance_criteria_from_run_row(self) -> None:
+        store = RunCriteriaRecoveryStore()
+        agent = CompletingAgent()
+        orchestrator = RunOrchestrator(
+            store=store,
+            planner=StaticPlanner(),
+            agent=agent,
+            sandbox=StaticWorkspaceService(),
+        )
+
+        await orchestrator.execute(
+            session_id="session",
+            run_id="run",
+            prompt="Resume the interrupted task.",
+        )
+
+        self.assertEqual(agent.tasks, ["task_resume"])
+        self.assertEqual(
+            agent.run_acceptance_criteria[0][0]["acceptance_criteria"],
+            ["Run row criterion."],
+        )
+
     async def test_resumed_task_receives_failed_tool_recovery_context(self) -> None:
         store = RecoveryStore()
         agent = CompletingAgent()
@@ -435,6 +532,10 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(agent.tasks, ["task_resume"])
+        self.assertEqual(
+            agent.run_acceptance_criteria[0][1]["acceptance_criteria"],
+            ["Code changed."],
+        )
         self.assertEqual(agent.handoffs[0][0]["from_task"]["id"], "task_done")
         self.assertEqual(
             agent.handoffs[0][0]["planned_task_results"][0]["status"],
@@ -442,8 +543,82 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("toolcall_failed", agent.recovery_contexts[0])
         self.assertIn("sandbox_runtime_error", agent.recovery_contexts[0])
+        self.assertIn('"input": {', agent.recovery_contexts[0])
+        self.assertIn('"path": "hello.py"', agent.recovery_contexts[0])
+        self.assertIn("sbxexec_failed", agent.recovery_contexts[0])
+        self.assertEqual(
+            store.handoffs[0]["payload"]["planned_task_results"][0]["status"],
+            "passed",
+        )
         self.assertIn("run.resumed", [event_type for event_type, _ in store.events])
         self.assertIn("run.completed", [event_type for event_type, _ in store.events])
+
+    def test_recovery_context_only_includes_failed_calls_for_current_task(self) -> None:
+        task = TaskRecord(
+            id="task_resume",
+            run_id="run",
+            seq=2,
+            kind="model_task",
+            title="Edit repo",
+            description="Add code.",
+            acceptance_criteria=["Code changed."],
+            status="resume_queued",
+        )
+        context = RunOrchestrator._recovery_context(
+            {
+                "tool_calls": [
+                    {
+                        "id": "toolcall_success",
+                        "task_id": "task_resume",
+                        "tool_name": "git_status",
+                        "input": {},
+                        "status": "succeeded",
+                        "latest_execution_id": "sbxexec_success",
+                    },
+                    {
+                        "id": "toolcall_other_task",
+                        "task_id": "task_other",
+                        "tool_name": "write_workspace_file",
+                        "input": {"path": "other.py"},
+                        "status": "failed",
+                        "failure_kind": "sandbox_runtime_error",
+                        "latest_execution_id": "sbxexec_other",
+                    },
+                    {
+                        "id": "toolcall_failed",
+                        "task_id": "task_resume",
+                        "tool_name": "write_workspace_file",
+                        "input": {"path": "hello.py"},
+                        "status": "failed",
+                        "failure_kind": "sandbox_runtime_error",
+                        "latest_execution_id": "sbxexec_failed",
+                    },
+                ]
+            },
+            task,
+        )
+
+        self.assertIn("toolcall_failed", context)
+        self.assertIn("sbxexec_failed", context)
+        self.assertNotIn("toolcall_success", context)
+        self.assertNotIn("toolcall_other_task", context)
+
+    def test_recovery_context_handles_missing_failed_tool_record(self) -> None:
+        task = TaskRecord(
+            id="task_resume",
+            run_id="run",
+            seq=1,
+            kind="model_task",
+            title="Resume task",
+            description="Resume a task.",
+            acceptance_criteria=[],
+            status="resume_queued",
+        )
+
+        self.assertEqual(
+            RunOrchestrator._recovery_context({"tool_calls": []}, task),
+            "The previous task attempt stopped before a failed tool context was recorded.",
+        )
 
 
 if __name__ == "__main__":

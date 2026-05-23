@@ -1,0 +1,242 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="blueArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#173b7a"/>
+    </marker>
+    <marker id="greenArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#047857"/>
+    </marker>
+    <marker id="redArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
+    </marker>
+    <style>
+      .bg { fill: url(#bg); }
+      .title { font-family: Inter, Arial, sans-serif; font-size: 30px; font-weight: 850; fill: #0b1b3a; }
+      .subtitle { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #183153; }
+      .panel { fill: rgba(255,255,255,0.84); stroke: #9bb9dd; stroke-width: 1.4; rx: 16; filter: url(#shadow); }
+      .panelTitle { font-family: Inter, Arial, sans-serif; font-size: 17px; font-weight: 800; fill: #071a3a; }
+      .box { fill: #f8fbff; stroke: #1d4ed8; stroke-width: 1.4; rx: 10; }
+      .green { fill: #ecfdf5; stroke: #059669; }
+      .orange { fill: #fff7ed; stroke: #f59e0b; }
+      .purple { fill: #f5f3ff; stroke: #7c3aed; }
+      .red { fill: #fff1f2; stroke: #ef4444; }
+      .dash { fill: #ffffff; stroke: #1d4ed8; stroke-width: 1.3; stroke-dasharray: 7 5; rx: 10; }
+      .boxTitle { font-family: Inter, Arial, sans-serif; font-size: 14px; font-weight: 800; fill: #0b1b3a; text-anchor: middle; }
+      .small { font-family: Inter, Arial, sans-serif; font-size: 11.5px; fill: #0b1b3a; text-anchor: middle; }
+      .tiny { font-family: Inter, Arial, sans-serif; font-size: 10px; fill: #334155; text-anchor: middle; }
+      .label { font-family: Inter, Arial, sans-serif; font-size: 10px; fill: #075985; }
+      .arrow { stroke: #173b7a; stroke-width: 2.2; fill: none; marker-end: url(#blueArrow); }
+      .state { stroke: #047857; stroke-width: 2.2; fill: none; marker-end: url(#greenArrow); }
+      .secret { stroke: #dc2626; stroke-width: 2; fill: none; marker-end: url(#redArrow); }
+      .dashLine { stroke: #173b7a; stroke-width: 1.8; fill: none; stroke-dasharray: 7 5; marker-end: url(#blueArrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="900"/>
+  <text class="title" x="26" y="42">Overall Architecture - Cloud Agent Platform PoC</text>
+  <text class="subtitle" x="26" y="68">Session Layer owns durable state. Brain Layer runs the agent harness. Sandbox Layer executes secretless workspace tools. GitHub Broker owns GitHub credentials.</text>
+
+  <rect class="panel" x="28" y="96" width="250" height="610"/>
+  <text class="panelTitle" x="48" y="128">1. Web/API Layer</text>
+
+  <rect class="panel" x="315" y="96" width="370" height="610"/>
+  <text class="panelTitle" x="335" y="128">2. Session Layer</text>
+
+  <rect class="panel" x="725" y="96" width="385" height="610"/>
+  <text class="panelTitle" x="745" y="128">3. Brain Layer</text>
+
+  <rect class="panel" x="1150" y="96" width="420" height="610"/>
+  <text class="panelTitle" x="1170" y="128">4. Tool Runtime Layer</text>
+
+  <rect class="panel" x="28" y="735" width="1542" height="128"/>
+  <text class="panelTitle" x="48" y="768">5. Cross-Cutting Boundaries</text>
+
+  <!-- Web -->
+  <rect class="box" x="72" y="165" width="160" height="80"/>
+  <text class="boxTitle" x="152" y="193">User</text>
+  <text class="small" x="152" y="216">prompt input</text>
+  <text class="small" x="152" y="233">wake run</text>
+
+  <rect class="box" x="72" y="302" width="160" height="118"/>
+  <text class="boxTitle" x="152" y="329">Web UI</text>
+  <text class="small" x="152" y="352">Run criteria JSON</text>
+  <text class="small" x="152" y="370">Task list</text>
+  <text class="small" x="152" y="388">Tool events</text>
+  <text class="small" x="152" y="406">Handoff JSON</text>
+
+  <rect class="box" x="72" y="496" width="160" height="102"/>
+  <text class="boxTitle" x="152" y="522">FastAPI Web</text>
+  <text class="small" x="152" y="546">create run</text>
+  <text class="small" x="152" y="564">wake run</text>
+  <text class="small" x="152" y="582">SSE proxy</text>
+
+  <path class="arrow" d="M152 245 L152 302"/>
+  <path class="arrow" d="M152 420 L152 496"/>
+
+  <!-- Session -->
+  <rect class="box" x="385" y="145" width="230" height="80"/>
+  <text class="boxTitle" x="500" y="174">Session API</text>
+  <text class="small" x="500" y="197">durable state service</text>
+  <text class="small" x="500" y="214">SSE event service</text>
+
+  <rect class="box" x="356" y="280" width="132" height="72"/>
+  <text class="boxTitle" x="422" y="306">runs</text>
+  <text class="small" x="422" y="328">prompt / status</text>
+  <text class="small" x="422" y="344">criteria JSONB</text>
+
+  <rect class="box" x="520" y="280" width="132" height="72"/>
+  <text class="boxTitle" x="586" y="306">tasks</text>
+  <text class="small" x="586" y="328">seq/title/detail</text>
+  <text class="small" x="586" y="344">criteria/status</text>
+
+  <rect class="box" x="356" y="386" width="132" height="72"/>
+  <text class="boxTitle" x="422" y="412">attempts</text>
+  <text class="small" x="422" y="434">attempt_no</text>
+  <text class="small" x="422" y="450">claude_session</text>
+
+  <rect class="box" x="520" y="386" width="132" height="72"/>
+  <text class="boxTitle" x="586" y="412">tool_calls</text>
+  <text class="small" x="586" y="434">input/status</text>
+  <text class="small" x="586" y="450">failure_kind</text>
+
+  <rect class="box" x="356" y="492" width="132" height="72"/>
+  <text class="boxTitle" x="422" y="518">handoffs</text>
+  <text class="small" x="422" y="540">payload JSONB</text>
+  <text class="small" x="422" y="556">progress only</text>
+
+  <rect class="box" x="520" y="492" width="132" height="72"/>
+  <text class="boxTitle" x="586" y="518">executions</text>
+  <text class="small" x="586" y="540">envelope JSONB</text>
+  <text class="small" x="586" y="556">runtime audit</text>
+
+  <rect class="dash" x="380" y="608" width="242" height="62"/>
+  <text class="boxTitle" x="501" y="632">Recovery Bundle</text>
+  <text class="small" x="501" y="654">run + tasks + failed tools + handoffs</text>
+
+  <path class="arrow" d="M500 225 L422 280"/>
+  <path class="arrow" d="M500 225 L586 280"/>
+  <path class="arrow" d="M500 225 L422 386"/>
+  <path class="arrow" d="M500 225 L586 386"/>
+  <path class="arrow" d="M500 225 L422 492"/>
+  <path class="arrow" d="M500 225 L586 492"/>
+  <path class="dashLine" d="M501 564 L501 608"/>
+
+  <!-- Brain -->
+  <rect class="box green" x="765" y="145" width="140" height="78"/>
+  <text class="boxTitle" x="835" y="173">Run Worker</text>
+  <text class="small" x="835" y="196">claim queued</text>
+  <text class="small" x="835" y="213">resume queued</text>
+
+  <rect class="box green" x="940" y="145" width="140" height="78"/>
+  <text class="boxTitle" x="1010" y="173">Planner Agent</text>
+  <text class="small" x="1010" y="196">task split</text>
+  <text class="small" x="1010" y="213">criteria plan</text>
+
+  <rect class="box green" x="805" y="280" width="230" height="88"/>
+  <text class="boxTitle" x="920" y="308">Task Orchestrator</text>
+  <text class="small" x="920" y="331">ordered loop</text>
+  <text class="small" x="920" y="349">status transitions</text>
+
+  <rect class="box green" x="765" y="420" width="160" height="116"/>
+  <text class="boxTitle" x="845" y="448">Query Context</text>
+  <text class="small" x="845" y="471">prompt + task</text>
+  <text class="small" x="845" y="489">task criteria</text>
+  <text class="small" x="845" y="507">run criteria</text>
+  <text class="small" x="845" y="525">handoff/recovery</text>
+
+  <rect class="box green" x="960" y="420" width="120" height="116"/>
+  <text class="boxTitle" x="1020" y="448">Task Agent</text>
+  <text class="small" x="1020" y="471">fresh query</text>
+  <text class="small" x="1020" y="489">JSON schema</text>
+  <text class="small" x="1020" y="507">MCP tools</text>
+
+  <rect class="box green" x="835" y="590" width="190" height="78"/>
+  <text class="boxTitle" x="930" y="618">MCP Tool Router</text>
+  <text class="small" x="930" y="641">trusted GitHub vs sandbox</text>
+
+  <path class="arrow" d="M905 184 L940 184"/>
+  <path class="arrow" d="M1010 223 L960 280"/>
+  <path class="arrow" d="M920 368 L845 420"/>
+  <path class="arrow" d="M925 478 L960 478"/>
+  <path class="arrow" d="M1020 536 L930 590"/>
+
+  <!-- Tool runtime -->
+  <rect class="box orange" x="1195" y="145" width="152" height="98"/>
+  <text class="boxTitle" x="1271" y="173">GitHub Broker</text>
+  <text class="small" x="1271" y="196">trusted service</text>
+  <text class="small" x="1271" y="214">has token</text>
+
+  <rect class="box orange" x="1380" y="145" width="145" height="98"/>
+  <text class="boxTitle" x="1452.5" y="173">GitHub Repo</text>
+  <text class="small" x="1452.5" y="196">clone / push</text>
+  <text class="small" x="1452.5" y="214">create PR</text>
+
+  <rect class="box purple" x="1195" y="310" width="152" height="98"/>
+  <text class="boxTitle" x="1271" y="338">Sandbox Service</text>
+  <text class="small" x="1271" y="361">workspace manager</text>
+  <text class="small" x="1271" y="379">pod launcher</text>
+
+  <rect class="box purple" x="1380" y="310" width="145" height="98"/>
+  <text class="boxTitle" x="1452.5" y="338">One-Shot Pod</text>
+  <text class="small" x="1452.5" y="361">per execution</text>
+  <text class="small" x="1452.5" y="379">no secrets</text>
+
+  <rect class="box purple" x="1270" y="492" width="180" height="88"/>
+  <text class="boxTitle" x="1360" y="520">Workspace PVC</text>
+  <text class="small" x="1360" y="543">sandbox-workspaces</text>
+  <text class="small" x="1360" y="561">/workspace/{run_id}</text>
+
+  <rect class="box" x="1270" y="620" width="180" height="62"/>
+  <text class="boxTitle" x="1360" y="644">Tool Envelope</text>
+  <text class="small" x="1360" y="666">result + runtime metadata</text>
+
+  <path class="arrow" d="M1347 194 L1380 194"/>
+  <path class="arrow" d="M1347 359 L1380 359"/>
+  <path class="arrow" d="M1452 408 L1388 492"/>
+  <path class="arrow" d="M1271 408 L1332 492"/>
+  <path class="arrow" d="M1360 580 L1360 620"/>
+
+  <!-- Cross-panel arrows -->
+  <path class="state" d="M232 547 L385 185"/>
+  <text class="label" x="248" y="512">POST run / wake</text>
+  <path class="state" d="M615 185 L765 184"/>
+  <text class="label" x="655" y="171">claim queued</text>
+  <path class="state" d="M622 638 C690 638 716 476 765 476"/>
+  <text class="label" x="645" y="608">recovery bundle</text>
+  <path class="state" d="M1035 326 L1150 326"/>
+  <text class="label" x="1058" y="311">tool metadata</text>
+  <path class="arrow" d="M1025 629 L1195 359"/>
+  <text class="label" x="1092" y="475">sandbox call</text>
+  <path class="arrow" d="M1025 629 L1195 194"/>
+  <text class="label" x="1084" y="282">trusted call</text>
+  <path class="state" d="M1270 651 C900 755 620 690 586 564"/>
+  <text class="label" x="956" y="726">persist tool execution envelope</text>
+
+  <!-- Boundaries -->
+  <rect class="box green" x="66" y="790" width="242" height="50"/>
+  <text class="boxTitle" x="187" y="812">Run Acceptance Criteria</text>
+  <text class="small" x="187" y="831">stored in runs; fed into every query</text>
+
+  <rect class="box green" x="360" y="790" width="242" height="50"/>
+  <text class="boxTitle" x="481" y="812">Handoff Context</text>
+  <text class="small" x="481" y="831">progress only; no run criteria duplicate</text>
+
+  <rect class="box red" x="655" y="790" width="242" height="50"/>
+  <text class="boxTitle" x="776" y="812">No Sandbox Secrets</text>
+  <text class="small" x="776" y="831">no GitHub token, API key, or SA token</text>
+
+  <rect class="box red" x="950" y="790" width="242" height="50"/>
+  <text class="boxTitle" x="1071" y="812">Trusted Secret Boundary</text>
+  <text class="small" x="1071" y="831">tokens only in Brain and GitHub Broker</text>
+
+  <rect class="box" x="1245" y="790" width="242" height="50"/>
+  <text class="boxTitle" x="1366" y="812">Transcript Artifacts</text>
+  <text class="small" x="1366" y="831">audit metadata, not prompt resume</text>
+</svg>

@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#173b7a"/>
+    </marker>
+    <marker id="greenArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#047857"/>
+    </marker>
+    <style>
+      .bg { fill: url(#bg); }
+      .title { font-family: Inter, Arial, sans-serif; font-size: 30px; font-weight: 850; fill: #0b1b3a; }
+      .subtitle { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #183153; }
+      .panel { fill: rgba(255,255,255,0.84); stroke: #9bb9dd; stroke-width: 1.3; rx: 16; filter: url(#shadow); }
+      .box { fill: #f8fbff; stroke: #1d4ed8; stroke-width: 1.4; rx: 11; filter: url(#shadow); }
+      .green { fill: #ecfdf5; stroke: #059669; }
+      .orange { fill: #fff7ed; stroke: #f59e0b; }
+      .purple { fill: #f5f3ff; stroke: #7c3aed; }
+      .red { fill: #fff1f2; stroke: #ef4444; }
+      .dash { fill: #ffffff; stroke: #1d4ed8; stroke-width: 1.3; stroke-dasharray: 7 5; rx: 11; }
+      .boxTitle { font-family: Inter, Arial, sans-serif; font-size: 15px; font-weight: 850; fill: #0b1b3a; text-anchor: middle; }
+      .section { font-family: Inter, Arial, sans-serif; font-size: 17px; font-weight: 850; fill: #071a3a; }
+      .mono { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; fill: #0f172a; }
+      .monoGreen { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11px; fill: #047857; font-weight: 700; }
+      .small { font-family: Inter, Arial, sans-serif; font-size: 11px; fill: #0b1b3a; text-anchor: middle; }
+      .arrow { stroke: #173b7a; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .state { stroke: #047857; stroke-width: 2.2; fill: none; marker-end: url(#greenArrow); }
+      .label { font-family: Inter, Arial, sans-serif; font-size: 10.5px; fill: #075985; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="960"/>
+  <text class="title" x="26" y="42">Key Data Contracts - What Each Boundary Sends</text>
+  <text class="subtitle" x="26" y="68">The harness uses explicit JSON contracts for planning, task execution, tool execution, handoff, recovery, and UI display.</text>
+
+  <rect class="panel" x="40" y="105" width="455" height="760"/>
+  <text class="section" x="62" y="138">A. Planner and Run Constitution</text>
+
+  <rect class="box green" x="75" y="170" width="380" height="170"/>
+  <text class="boxTitle" x="265" y="198">Planner Output</text>
+  <text class="mono" x="105" y="228">{</text>
+  <text class="mono" x="125" y="248">"tasks": [</text>
+  <text class="mono" x="145" y="268">{ "title": "...",</text>
+  <text class="mono" x="165" y="288">"description": "...",</text>
+  <text class="monoGreen" x="165" y="308">"acceptance_criteria": ["..."] }</text>
+  <text class="mono" x="125" y="328">]</text>
+
+  <rect class="box green" x="75" y="395" width="380" height="230"/>
+  <text class="boxTitle" x="265" y="423">runs.acceptance_criteria</text>
+  <text class="small" x="265" y="446">global constitution, stored once on run</text>
+  <text class="mono" x="105" y="478">[</text>
+  <text class="mono" x="125" y="498">{</text>
+  <text class="mono" x="145" y="518">"task_id": "task_x",</text>
+  <text class="mono" x="145" y="538">"task_seq": 1,</text>
+  <text class="mono" x="145" y="558">"title": "Clone repository",</text>
+  <text class="mono" x="145" y="578">"description": "...",</text>
+  <text class="monoGreen" x="145" y="598">"acceptance_criteria": ["...", "..."]</text>
+  <text class="mono" x="125" y="618">}</text>
+
+  <rect class="dash" x="75" y="690" width="380" height="92"/>
+  <text class="boxTitle" x="265" y="718">Frontend Run View</text>
+  <text class="small" x="265" y="742">shows only runs.acceptance_criteria JSON</text>
+  <text class="small" x="265" y="762">does not merge task progress into constitution</text>
+
+  <path class="state" d="M265 340 L265 395"/>
+  <path class="state" d="M265 625 L265 690"/>
+
+  <rect class="panel" x="555" y="105" width="495" height="760"/>
+  <text class="section" x="577" y="138">B. Fresh Task Query Contract</text>
+
+  <rect class="box" x="600" y="170" width="405" height="300"/>
+  <text class="boxTitle" x="802.5" y="198">Task Query Context</text>
+  <text class="small" x="802.5" y="222">assembled by Brain before each Claude SDK query</text>
+  <text class="mono" x="630" y="255">User request:</text>
+  <text class="monoGreen" x="650" y="275">original prompt</text>
+  <text class="mono" x="630" y="305">Current planned task:</text>
+  <text class="monoGreen" x="650" y="325">seq + title + description</text>
+  <text class="mono" x="630" y="355">Task acceptance criteria:</text>
+  <text class="monoGreen" x="650" y="375">tasks.acceptance_criteria</text>
+  <text class="mono" x="630" y="405">Run acceptance criteria:</text>
+  <text class="monoGreen" x="650" y="425">runs.acceptance_criteria</text>
+  <text class="mono" x="630" y="455">Optional:</text>
+
+  <rect class="box orange" x="600" y="520" width="188" height="155"/>
+  <text class="boxTitle" x="694" y="548">Handoff Context</text>
+  <text class="small" x="694" y="572">from previous completed tasks</text>
+  <text class="mono" x="622" y="602">planned_task_results</text>
+  <text class="mono" x="622" y="624">latest_completed_task</text>
+  <text class="mono" x="622" y="646">summary / verification</text>
+
+  <rect class="box red" x="817" y="520" width="188" height="155"/>
+  <text class="boxTitle" x="911" y="548">Recovery Context</text>
+  <text class="small" x="911" y="572">only on resume_queued task</text>
+  <text class="mono" x="839" y="602">failed tool_call_id</text>
+  <text class="mono" x="839" y="624">tool_name + input</text>
+  <text class="mono" x="839" y="646">failure_kind + exec_id</text>
+
+  <path class="arrow" d="M802 470 L694 520"/>
+  <path class="arrow" d="M802 470 L911 520"/>
+
+  <rect class="dash" x="600" y="725" width="405" height="82"/>
+  <text class="boxTitle" x="802.5" y="753">Important Rule</text>
+  <text class="small" x="802.5" y="777">Handoff does not contain run_acceptance_criteria.</text>
+  <text class="small" x="802.5" y="795">Run criteria are injected separately into every query.</text>
+
+  <rect class="panel" x="1110" y="105" width="450" height="760"/>
+  <text class="section" x="1132" y="138">C. Outputs and Runtime Evidence</text>
+
+  <rect class="box purple" x="1145" y="170" width="375" height="245"/>
+  <text class="boxTitle" x="1332.5" y="198">AgentTaskResult</text>
+  <text class="mono" x="1175" y="230">{</text>
+  <text class="mono" x="1195" y="250">"status": "completed|blocked|failed",</text>
+  <text class="mono" x="1195" y="270">"summary": "...",</text>
+  <text class="mono" x="1195" y="290">"criteria_results": [</text>
+  <text class="mono" x="1215" y="310">{ "criterion": "exact text",</text>
+  <text class="monoGreen" x="1235" y="330">"status": "passed|failing|not_verified|blocked",</text>
+  <text class="mono" x="1235" y="350">"evidence": "..." }</text>
+  <text class="mono" x="1195" y="370">],</text>
+  <text class="mono" x="1195" y="390">"verification": { commands_run, ... }</text>
+
+  <rect class="box" x="1145" y="455" width="178" height="160"/>
+  <text class="boxTitle" x="1234" y="483">Handoff Payload</text>
+  <text class="mono" x="1165" y="512">schema_version</text>
+  <text class="mono" x="1165" y="534">from_task</text>
+  <text class="mono" x="1165" y="556">planned_task_results</text>
+  <text class="mono" x="1165" y="578">latest_completed_task</text>
+  <text class="mono" x="1165" y="600">status / summary</text>
+
+  <rect class="box" x="1342" y="455" width="178" height="160"/>
+  <text class="boxTitle" x="1431" y="483">Tool Envelope</text>
+  <text class="mono" x="1362" y="512">execution_id</text>
+  <text class="mono" x="1362" y="534">tool_call_id</text>
+  <text class="mono" x="1362" y="556">execution_status</text>
+  <text class="mono" x="1362" y="578">tool_result</text>
+  <text class="mono" x="1362" y="600">runtime metadata</text>
+
+  <rect class="dash" x="1145" y="690" width="375" height="92"/>
+  <text class="boxTitle" x="1332.5" y="718">Persistence Targets</text>
+  <text class="small" x="1332.5" y="742">task_handoffs.payload stores handoff only</text>
+  <text class="small" x="1332.5" y="762">tool_executions.envelope stores full runtime audit</text>
+
+  <path class="arrow" d="M1005 320 L1145 292"/>
+  <text class="label" x="1070" y="290">model returns JSON</text>
+  <path class="state" d="M1332 415 L1234 455"/>
+  <path class="state" d="M1332 415 L1431 455"/>
+  <path class="state" d="M1234 615 L1234 690"/>
+  <path class="state" d="M1431 615 L1431 690"/>
+
+  <path class="state" d="M455 510 C520 510 550 320 600 320"/>
+  <text class="label" x="530" y="300">inject into query</text>
+  <path class="state" d="M455 736 C520 736 548 765 600 765"/>
+</svg>

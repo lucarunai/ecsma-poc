@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="940" viewBox="0 0 1600 940">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#173b7a"/>
+    </marker>
+    <marker id="stateArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#047857"/>
+    </marker>
+    <style>
+      .bg { fill: url(#bg); }
+      .title { font-family: Inter, Arial, sans-serif; font-size: 30px; font-weight: 850; fill: #0b1b3a; }
+      .subtitle { font-family: Inter, Arial, sans-serif; font-size: 14px; fill: #183153; }
+      .lane { fill: rgba(255,255,255,0.76); stroke: #9bb9dd; stroke-width: 1.3; rx: 15; filter: url(#shadow); }
+      .laneTitle { font-family: Inter, Arial, sans-serif; font-size: 15px; font-weight: 800; fill: #071a3a; text-anchor: middle; }
+      .step { fill: #f8fbff; stroke: #1d4ed8; stroke-width: 1.4; rx: 10; }
+      .green { fill: #ecfdf5; stroke: #059669; }
+      .orange { fill: #fff7ed; stroke: #f59e0b; }
+      .purple { fill: #f5f3ff; stroke: #7c3aed; }
+      .dash { fill: #ffffff; stroke: #1d4ed8; stroke-width: 1.3; stroke-dasharray: 7 5; rx: 10; }
+      .stepTitle { font-family: Inter, Arial, sans-serif; font-size: 13px; font-weight: 800; fill: #0b1b3a; text-anchor: middle; }
+      .small { font-family: Inter, Arial, sans-serif; font-size: 11px; fill: #0b1b3a; text-anchor: middle; }
+      .num { font-family: Inter, Arial, sans-serif; font-size: 12px; font-weight: 800; fill: white; text-anchor: middle; }
+      .badge { fill: #173b7a; }
+      .arrow { stroke: #173b7a; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .state { stroke: #047857; stroke-width: 2.2; fill: none; marker-end: url(#stateArrow); }
+      .label { font-family: Inter, Arial, sans-serif; font-size: 10.5px; fill: #075985; text-anchor: middle; }
+      .dbnote { font-family: Inter, Arial, sans-serif; font-size: 10.5px; fill: #064e3b; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="940"/>
+  <text class="title" x="26" y="42">Run Lifecycle - From Prompt to Completed Run</text>
+  <text class="subtitle" x="26" y="68">Every user task is decomposed into durable task records. Each task runs as a fresh agent query with DB-backed handoff and recovery context.</text>
+
+  <!-- Lanes -->
+  <rect class="lane" x="45" y="105" width="210" height="755"/>
+  <rect class="lane" x="300" y="105" width="245" height="755"/>
+  <rect class="lane" x="590" y="105" width="310" height="755"/>
+  <rect class="lane" x="945" y="105" width="285" height="755"/>
+  <rect class="lane" x="1275" y="105" width="280" height="755"/>
+  <text class="laneTitle" x="150" y="135">Web/UI</text>
+  <text class="laneTitle" x="422.5" y="135">Session + Postgres</text>
+  <text class="laneTitle" x="745" y="135">Brain Orchestrator</text>
+  <text class="laneTitle" x="1087.5" y="135">Claude Agent SDK</text>
+  <text class="laneTitle" x="1415" y="135">Tool Runtime</text>
+
+  <!-- Steps -->
+  <circle class="badge" cx="87" cy="187" r="15"/><text class="num" x="87" y="191">1</text>
+  <rect class="step" x="105" y="158" width="120" height="65"/>
+  <text class="stepTitle" x="165" y="181">Submit Prompt</text>
+  <text class="small" x="165" y="202">POST /runs</text>
+
+  <circle class="badge" cx="337" cy="187" r="15"/><text class="num" x="337" y="191">2</text>
+  <rect class="step" x="360" y="158" width="150" height="65"/>
+  <text class="stepTitle" x="435" y="181">Create Run</text>
+  <text class="small" x="435" y="202">runs.status=queued</text>
+
+  <circle class="badge" cx="630" cy="187" r="15"/><text class="num" x="630" y="191">3</text>
+  <rect class="step green" x="650" y="158" width="175" height="65"/>
+  <text class="stepTitle" x="737.5" y="181">Claim Run</text>
+  <text class="small" x="737.5" y="202">queued -&gt; running</text>
+
+  <circle class="badge" cx="980" cy="187" r="15"/><text class="num" x="980" y="191">4</text>
+  <rect class="step green" x="1000" y="158" width="175" height="65"/>
+  <text class="stepTitle" x="1087.5" y="181">Planner Query</text>
+  <text class="small" x="1087.5" y="202">tasks + criteria</text>
+
+  <circle class="badge" cx="630" cy="305" r="15"/><text class="num" x="630" y="309">5</text>
+  <rect class="step green" x="650" y="274" width="190" height="78"/>
+  <text class="stepTitle" x="745" y="299">Persist Plan</text>
+  <text class="small" x="745" y="320">tasks rows</text>
+  <text class="small" x="745" y="337">runs.acceptance_criteria</text>
+
+  <circle class="badge" cx="337" cy="305" r="15"/><text class="num" x="337" y="309">6</text>
+  <rect class="step" x="360" y="274" width="150" height="78"/>
+  <text class="stepTitle" x="435" y="299">Emit Plan</text>
+  <text class="small" x="435" y="320">tasks.created</text>
+  <text class="small" x="435" y="337">SSE replayable</text>
+
+  <circle class="badge" cx="630" cy="432" r="15"/><text class="num" x="630" y="436">7</text>
+  <rect class="step green" x="650" y="395" width="190" height="92"/>
+  <text class="stepTitle" x="745" y="419">Start Task Attempt</text>
+  <text class="small" x="745" y="441">task_attempts row</text>
+  <text class="small" x="745" y="458">task.status=running</text>
+  <text class="small" x="745" y="475">event task.started</text>
+
+  <circle class="badge" cx="980" cy="432" r="15"/><text class="num" x="980" y="436">8</text>
+  <rect class="step green" x="1000" y="395" width="185" height="92"/>
+  <text class="stepTitle" x="1092.5" y="419">Task Query</text>
+  <text class="small" x="1092.5" y="441">prompt + task criteria</text>
+  <text class="small" x="1092.5" y="458">run criteria</text>
+  <text class="small" x="1092.5" y="475">handoff/recovery</text>
+
+  <circle class="badge" cx="1308" cy="432" r="15"/><text class="num" x="1308" y="436">9</text>
+  <rect class="step purple" x="1330" y="395" width="175" height="92"/>
+  <text class="stepTitle" x="1417.5" y="419">Tool Calls</text>
+  <text class="small" x="1417.5" y="441">tool_calls requested</text>
+  <text class="small" x="1417.5" y="458">tool_executions envelope</text>
+  <text class="small" x="1417.5" y="475">return result/error</text>
+
+  <circle class="badge" cx="980" cy="588" r="15"/><text class="num" x="980" y="592">10</text>
+  <rect class="step green" x="1000" y="546" width="185" height="98"/>
+  <text class="stepTitle" x="1092.5" y="570">Agent Result</text>
+  <text class="small" x="1092.5" y="592">status completed/blocked</text>
+  <text class="small" x="1092.5" y="609">criteria_results</text>
+  <text class="small" x="1092.5" y="626">verification</text>
+
+  <circle class="badge" cx="630" cy="588" r="15"/><text class="num" x="630" y="592">11</text>
+  <rect class="step green" x="650" y="546" width="210" height="98"/>
+  <text class="stepTitle" x="755" y="570">Persist Completion</text>
+  <text class="small" x="755" y="592">update task + attempt</text>
+  <text class="small" x="755" y="609">record transcript</text>
+  <text class="small" x="755" y="626">create handoff payload</text>
+
+  <circle class="badge" cx="630" cy="735" r="15"/><text class="num" x="630" y="739">12</text>
+  <rect class="step green" x="650" y="700" width="210" height="82"/>
+  <text class="stepTitle" x="755" y="724">Next Task or Finish</text>
+  <text class="small" x="755" y="746">append task.handoff</text>
+  <text class="small" x="755" y="763">run.completed / blocked</text>
+
+  <circle class="badge" cx="87" cy="735" r="15"/><text class="num" x="87" y="739">13</text>
+  <rect class="step" x="105" y="700" width="120" height="82"/>
+  <text class="stepTitle" x="165" y="724">Live UI</text>
+  <text class="small" x="165" y="746">SSE updates</text>
+  <text class="small" x="165" y="763">Run + Tasks</text>
+
+  <!-- Arrows -->
+  <path class="arrow" d="M225 190 L360 190"/>
+  <path class="state" d="M510 190 L650 190"/>
+  <path class="arrow" d="M825 190 L1000 190"/>
+  <path class="arrow" d="M1087 223 C1030 250 850 250 745 274"/>
+  <path class="state" d="M650 313 L510 313"/>
+  <path class="state" d="M435 352 C370 520 240 700 225 735"/>
+  <path class="arrow" d="M745 352 L745 395"/>
+  <path class="arrow" d="M840 441 L1000 441"/>
+  <path class="arrow" d="M1185 441 L1330 441"/>
+  <path class="arrow" d="M1330 474 C1250 525 1185 565 1185 588"/>
+  <path class="arrow" d="M1000 595 L860 595"/>
+  <path class="state" d="M755 644 L755 700"/>
+  <path class="state" d="M650 741 C470 805 260 785 225 741"/>
+
+  <!-- Side notes -->
+  <rect class="dash" x="320" y="820" width="1040" height="72"/>
+  <text class="stepTitle" x="840" y="844">Durability Rule</text>
+  <text class="small" x="840" y="866">The model conversation is disposable. Recovery uses database state, persistent workspace state, failed tool summaries, and prior task handoff payloads.</text>
+  <text class="small" x="840" y="884">Run-level acceptance criteria are stored once on runs and sent into every fresh task query.</text>
+</svg>

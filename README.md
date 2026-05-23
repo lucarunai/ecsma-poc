@@ -26,24 +26,14 @@ The first supported business flow is intentionally narrow:
 
 ## Architecture
 
-```text
-Browser
-  -> Web service
-     -> Session service queued run + session events
-  -> Brain service claims queued runs from Session service
-     -> Brain Orchestrator
-        -> AgentTaskPlanner through Claude Agent SDK
-        -> Claude Agent SDK adapter + MCP tool facade
-           -> Sandbox Manager
-              -> one-shot Sandbox tool Pod
-                 -> mounted run workspace
-           -> GitHub Broker
-              -> mounted run workspace
-              -> GitHubWorkflowService
-     -> Session service events + transcript/handoff indexes
-        -> Postgres
-        -> Session artifact volume
-```
+See [docs/architecture](docs/architecture/README.md) for the visual
+architecture diagrams:
+
+- [Overall architecture](docs/architecture/overall-architecture.svg)
+- [Run flow](docs/architecture/run-flow.svg)
+- [Database core fields](docs/architecture/database-core-fields.svg)
+- [Data contracts](docs/architecture/data-contracts.svg)
+- [Tool and pod flow](docs/architecture/tool-pod-flow.svg)
 
 `session_events` is the platform event ledger. Claude SDK output is normalized
 into platform events before it reaches SSE, so the frontend does not depend on
@@ -58,12 +48,14 @@ SDK query. Every task query starts a new model session and receives durable
 stores a global `acceptance_criteria` JSON document after planning; this is the
 run-level constitution that every fresh Task Agent query receives. Each task row
 also keeps its own local `acceptance_criteria`, which bounds the current query.
-The handoff payload is `task_handoff.v1`: it stores the run-level acceptance
-criteria, a `planned_task_results` snapshot with every task's description,
-criteria, status, and summary, the latest completed task, per-criterion
-verification status, and sparse verification evidence such as commands run,
-files changed, or published artifacts. Brain sends the global criteria, latest
-run progress snapshot, and prior task summaries into the next fresh query.
+The handoff payload is `task_handoff.v1`: it stores a `planned_task_results`
+snapshot with every task's description, criteria, status, and summary, the
+latest completed task, per-criterion verification status, and sparse
+verification evidence such as commands run, files changed, or published
+artifacts. It does not duplicate the run-level acceptance criteria. Brain sends
+the global criteria separately, together with the latest run progress snapshot
+and prior task summaries, into the next fresh query.
+
 `tool_calls` stores Agent-requested tool inputs, while `tool_executions` stores
 runtime envelopes that return from Sandbox or the trusted broker. Session events
 put tool calls, Sandbox runtime failures, and task state under the Task list and
@@ -138,6 +130,15 @@ GitHub operations to the GitHub Broker and routes untrusted workspace operations
 to one-shot Sandbox Pods. The Task Agent can request a push or pull request
 through a tool call, but Sandbox tool Pods do not receive GitHub credentials and
 the token is not written to the checkout.
+
+## Testing
+
+See [docs/testing.md](docs/testing.md) for the full test strategy, coverage map,
+and invariants.
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -v
+```
 
 ## Configuration
 
