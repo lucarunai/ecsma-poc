@@ -13,6 +13,14 @@ spec:
       labels:
         app: cloud-agent-brain
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: brain
           image: cloud-agent-poc-v2:local
@@ -33,7 +41,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: CLAUDE_CONFIG_DIR
-              value: /root/.claude/brain/$(POD_NAME)
+              value: /home/cloudagent/.claude/brain/$(POD_NAME)
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -51,9 +59,21 @@ spec:
               path: /healthz
               port: 8000
             periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: claude-config
-              mountPath: /root/.claude
+              mountPath: /home/cloudagent/.claude
       volumes:
         - name: claude-config
           emptyDir: {}

@@ -16,6 +16,6 @@ data:
   GITHUB_SOURCE_BRANCH: test
   GITHUB_TARGET_BRANCH: main
   WORKSPACE_ROOT: /sandboxes
-  CLAUDE_CONFIG_DIR: /root/.claude
+  CLAUDE_CONFIG_DIR: /home/cloudagent/.claude
   GIT_AUTHOR_NAME: Cloud Agent PoC
   GIT_AUTHOR_EMAIL: cloud-agent-poc-v2@example.local
