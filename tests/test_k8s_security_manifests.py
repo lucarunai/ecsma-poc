@@ -93,10 +93,24 @@ class KubernetesSecurityManifestTests(unittest.TestCase):
         self.assertIn("claimName: postgres-data", postgres)
         self.assertNotIn("emptyDir: {}", postgres)
 
+    def test_v2_sandbox_manager_initializes_workspace_permissions(self) -> None:
+        sandbox = Path("k8s-v2/sandbox.yaml").read_text()
+
+        self.assertIn("initContainers:", sandbox)
+        self.assertIn("name: sandbox-workspace-permissions", sandbox)
+        self.assertIn("mkdir -p /sandboxes/users", sandbox)
+        self.assertIn("chown -R 10001:10001 /sandboxes", sandbox)
+        self.assertIn("chmod -R g+rwX /sandboxes", sandbox)
+        init_container_block = _container_block(sandbox, "sandbox-workspace-permissions")
+        self.assertIn("runAsNonRoot: false", init_container_block)
+        self.assertIn("runAsUser: 0", init_container_block)
+        self.assertIn("allowPrivilegeEscalation: false", init_container_block)
+        self.assertIn("mountPath: /sandboxes", init_container_block)
+
 
 def _container_block(manifest: str, container_name: str) -> str:
-    marker = f"        - name: {container_name}"
-    start = manifest.index(marker)
+    marker = f"\n        - name: {container_name}\n"
+    start = manifest.index(marker) + 1
     next_container = manifest.find("\n        - name:", start + len(marker))
     if next_container == -1:
         return manifest[start:]

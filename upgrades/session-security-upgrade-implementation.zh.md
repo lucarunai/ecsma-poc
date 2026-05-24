@@ -584,22 +584,73 @@ Sandbox 和 GitHub Broker 接收 `workspace_path`，并校验路径必须位于 
 - `src/cloud_agent_poc/sandbox_protocol.py`
 - `tests/test_ownership.py`
 
-## 5. Security Isolation 实际实现补充
+## 5. Security Isolation 实际实现
 
-### 5.1 GitHub secret 边界
+本节只记录当前已经落地的 Security Level 1 和 Level 2。Security Level 3 暂时不做，不作为当前版本实现范围。
 
-当前仍保持 GitHub secret 不进入 sandbox pod。
+### 5.1 Security Level 1：PoC 安全边界
 
-分层：
+Level 1 的目标是证明：
 
-- Sandbox Layer 执行无 secret 的 workspace/local git/test/edit/read 操作。
-- GitHub Broker 持有 GitHub token，处理 clone/fetch/push/PR 相关 trusted 操作。
-- Brain 只通过 tool abstraction 调用，不直接读取 secret。
+- Agent 不能直接操作 Brain Pod 本地文件系统。
+- Sandbox Pod 不接触 secret。
+- 高风险 GitHub 写操作不自动执行。
+- 所有 tool 调用和执行结果都可审计。
+
+#### 5.1.1 Agent 只能使用 controlled MCP tools
+
+Agent 不依赖 Claude Code 默认本地工具直接读写系统文件，而是通过平台暴露的工具面执行：
+
+```text
+Sandbox workspace tools:
+read_workspace_file
+write_workspace_file
+edit_workspace_file
+glob_workspace_files
+grep_workspace_files
+create_git_branch
+git_status
+git_diff_stat
+run_python_unittest
+commit_git_changes
+
+Trusted GitHub broker tools:
+clone_github_repository
+checkout_git_branch
+push_current_git_branch
+create_github_pull_request
+```
+
+效果：
+
+- Brain 负责 agent loop 和 harness。
+- Agent 的实际副作用必须穿过 SDK tool layer。
+- Tool call、tool execution、approval 都会落库和写入 event ledger。
+
+相关代码：
+
+- `src/cloud_agent_poc/brain/claude_agent.py`
+- `src/cloud_agent_poc/brain/sdk_tools.py`
+- `src/cloud_agent_poc/sandbox_protocol.py`
+- `src/cloud_agent_poc/session_store.py`
+
+#### 5.1.2 Secret 边界
+
+当前 secret 注入边界：
+
+```text
+ANTHROPIC_API_KEY -> Brain only
+GITHUB_TOKEN      -> GitHub Broker only
+Sandbox Pod       -> no GitHub token, no Anthropic token
+```
+
+Sandbox Layer 执行无 secret 的 workspace/local git/test/edit/read 操作。GitHub Broker 单独持有 GitHub token，处理 clone/fetch/push/PR 等 trusted 操作。
 
 效果：
 
 - 不可信 workspace tool 看不到 GitHub token。
-- 高风险写操作再叠加 human approval。
+- 不可信 workspace tool 看不到 Anthropic API key。
+- GitHub 写操作还会叠加 Human Approval。
 
 相关代码：
 
@@ -607,31 +658,208 @@ Sandbox 和 GitHub Broker 接收 `workspace_path`，并校验路径必须位于 
 - `src/cloud_agent_poc/github_broker_client.py`
 - `src/cloud_agent_poc/sandbox_app.py`
 - `src/cloud_agent_poc/brain/sdk_tools.py`
+- `tests/test_sandbox_runtime.py`
 
-### 5.2 Sandbox workspace path 校验
+#### 5.1.3 Workspace path 校验与 user-scoped workspace
+
+Workspace path 已升级为 user-scoped：
+
+```text
+/sandboxes/users/{user_id}/{run_id}
+```
 
 Sandbox 和 GitHub Broker 都会把传入的 workspace path resolve 后校验：
 
 - 必须在配置的 workspace root 内。
 - 不允许 `../` 或绝对路径逃逸。
+- One-shot Sandbox Pod 挂载真实的 user-scoped subPath，例如 `users/Luca/run_xxx`。
 
 效果：
 
+- Luca 和 Josephine 的 workspace 目录天然隔离。
 - 即使 agent/tool input 试图传入异常路径，也不会跳出 sandbox workspace root。
+- K8s one-shot Pod 执行的就是当前 run 的真实 user-scoped workspace，而不是旧的 `/sandboxes/{run_id}`。
 
 相关代码：
 
 - `src/cloud_agent_poc/sandbox_app.py`
 - `src/cloud_agent_poc/github_broker_app.py`
+- `src/cloud_agent_poc/sandbox_manager.py`
 - `src/cloud_agent_poc/sandbox_protocol.py`
+- `tests/test_sandbox_runtime.py`
+- `tests/test_ownership.py`
 
-### 5.3 Brain Pod Claude config 隔离
+#### 5.1.4 高风险操作 Human Approval
+
+当前高风险工具：
+
+```text
+push_current_git_branch
+create_github_pull_request
+```
+
+这些工具不会被 Agent 调用后立即执行，而是进入 `awaiting_approval`：
+
+1. SDK tool layer 创建 `approval_requests`。
+2. Session event 发出 `approval.requested`。
+3. 前端展示 approval card。
+4. 用户批准后继续执行，拒绝后 tool call 失败并记录原因。
+
+效果：
+
+- push / PR 这种外部写操作有人工关口。
+- 审计链路能看到谁请求、谁批准或拒绝、批准了什么 input。
+
+相关代码：
+
+- `src/cloud_agent_poc/tool_policy.py`
+- `src/cloud_agent_poc/brain/sdk_tools.py`
+- `src/cloud_agent_poc/session_store.py`
+- `src/cloud_agent_poc/static/index.html`
+- `tests/test_sdk_tool_execution.py`
+- `tests/test_static_ui_contract.py`
+
+### 5.2 Security Level 2：Kubernetes 强隔离基础
+
+Level 2 的目标是加强 K8s runtime 边界：即使 Sandbox 执行环境里跑了不可信代码，也尽量限制它的权限、资源和横向移动能力。当前已经落地的是 Pod 权限、RBAC、resource limit、workspace mount 对齐和 manifest contract tests。
+
+#### 5.2.1 Sandbox Manager RBAC 最小化
+
+`cloud-agent-sandbox-manager` ServiceAccount 当前只允许：
+
+```text
+pods create/get/delete
+pods/log get
+```
+
+不授予：
+
+```text
+secrets get/list/watch
+configmaps list
+pods exec
+cluster-wide permission
+```
+
+效果：
+
+- Sandbox Manager 可以创建 one-shot Sandbox Pod 并读取日志。
+- Sandbox Manager 不能读取 Kubernetes Secret。
+- Sandbox Manager 没有 cluster-level 权限。
+
+相关文件：
+
+- `k8s-v2/sandbox.yaml`
+
+#### 5.2.2 One-shot Sandbox Pod 安全上下文
+
+每次 tool execution 创建一个 one-shot Sandbox Pod。Pod manifest 当前包含：
+
+```text
+automountServiceAccountToken: false
+restartPolicy: Never
+activeDeadlineSeconds: 180
+```
+
+容器级安全上下文：
+
+```text
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+allowPrivilegeEscalation: false
+capabilities.drop: ["ALL"]
+seccompProfile: RuntimeDefault
+```
+
+资源限制：
+
+```text
+requests:
+  cpu: 100m
+  memory: 128Mi
+limits:
+  cpu: 500m
+  memory: 512Mi
+```
+
+`/tmp` 使用 `emptyDir`，避免工具因为非 root 或只读路径缺少临时目录。
+
+效果：
+
+- Tool Pod 没有 Kubernetes API token。
+- Tool Pod 不能提权，默认丢弃 Linux capabilities。
+- Tool Pod 有最长运行时间和资源上限。
+- Tool Pod 失败或完成后由 Sandbox Manager 清理。
+
+相关代码：
+
+- `src/cloud_agent_poc/sandbox_manager.py`
+- `tests/test_sandbox_runtime.py`
+
+#### 5.2.3 长期服务 Pod 非 root 与资源限制
+
+v2 长期服务已经补齐基础 runtime hardening：
+
+```text
+cloud-agent-brain
+cloud-agent-web
+cloud-agent-session
+cloud-agent-sandbox
+cloud-agent-github-broker
+postgres
+```
+
+Cloud Agent 服务统一使用非 root 镜像用户：
+
+```text
+UID/GID = 10001
+HOME = /home/cloudagent
+```
+
+Pod 级安全上下文：
+
+```text
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+fsGroup: 10001
+seccompProfile: RuntimeDefault
+```
+
+容器级安全上下文：
+
+```text
+allowPrivilegeEscalation: false
+capabilities.drop: ["ALL"]
+```
+
+所有长期服务都增加了 resources requests/limits，避免异常任务吃爆节点资源。
+
+效果：
+
+- 长期服务不再以 root 运行。
+- Brain / Web / Session / GitHub Broker 不挂载 Kubernetes service account token。
+- Claude config 从 `/root/.claude` 移到 `/home/cloudagent/.claude`。
+
+相关文件：
+
+- `Dockerfile`
+- `k8s-v2/brain.yaml`
+- `k8s-v2/web.yaml`
+- `k8s-v2/session.yaml`
+- `k8s-v2/sandbox.yaml`
+- `k8s-v2/github-broker.yaml`
+- `k8s-v2/postgres.yaml`
+- `tests/test_k8s_security_manifests.py`
+
+#### 5.2.4 Brain Pod Claude config 隔离
 
 多 Brain Worker 后，Claude config/session/transcript 根目录不再共享同一个路径。
 
 当前设计：
 
-- 每个 Brain Pod 使用自己的 volume/config path。
+- 每个 Brain Pod 使用自己的 `CLAUDE_CONFIG_DIR` 子目录。
 - Provider transcript/session id 不作为恢复主链路。
 - 系统恢复依赖 Session Layer 中的 durable state、handoff、recovery bundle。
 
@@ -643,7 +871,77 @@ Sandbox 和 GitHub Broker 都会把传入的 workspace path resolve 后校验：
 相关文件：
 
 - `k8s-v2/brain.yaml`
+- `k8s-v2/configmap.yaml`
 - `src/cloud_agent_poc/brain/claude_agent.py`
+
+#### 5.2.5 Sandbox workspace PVC 权限初始化
+
+由于长期服务已经改成非 root，`cloud-agent-sandbox` 需要以 UID/GID `10001` 创建：
+
+```text
+/sandboxes/users/{user_id}/{run_id}
+```
+
+但 PVC 挂载点在 Docker Desktop / hostPath / local provisioner 场景下可能默认是 `root:root`，仅依赖 `fsGroup` 不一定可靠。因此 v2 的 Sandbox Manager Deployment 增加了 initContainer：
+
+```text
+mkdir -p /sandboxes/users
+chown -R 10001:10001 /sandboxes
+chmod -R g+rwX /sandboxes
+```
+
+主容器仍然保持非 root。initContainer 只负责启动前的卷权限初始化。
+
+效果：
+
+- 修复非 root Sandbox Manager 无法创建 user-scoped workspace 的问题。
+- 保持运行时服务非 root。
+- K8s one-shot Pod 可以挂载真实 user-scoped workspace subPath。
+
+相关文件：
+
+- `k8s-v2/sandbox.yaml`
+- `tests/test_k8s_security_manifests.py`
+
+#### 5.2.6 Postgres 使用 PVC
+
+Postgres 从 `emptyDir` 改为 PVC：
+
+```text
+postgres-data
+```
+
+效果：
+
+- Session Layer 的 Postgres 更符合 durable source of truth 的设计。
+- Pod 重启不会因为 `emptyDir` 丢失 session/run/task/event 状态。
+
+相关文件：
+
+- `k8s-v2/postgres.yaml`
+- `tests/test_k8s_security_manifests.py`
+
+#### 5.2.7 Manifest contract tests
+
+新增和扩展了 K8s manifest contract tests，防止后续改 YAML 时破坏安全边界。
+
+当前覆盖：
+
+- Cloud Agent 镜像必须使用非 root 用户。
+- v2 长期服务必须有 resources requests/limits。
+- v2 长期服务必须有非 root securityContext。
+- 非 K8s client workload 必须禁用 service account token。
+- Brain Claude config 不能回到 `/root/.claude`。
+- Postgres 必须使用 PVC，不能回到 `emptyDir`。
+- Sandbox Manager 必须初始化 `/sandboxes/users` 权限。
+- One-shot Sandbox Pod 必须禁用 service account token、设置 timeout、securityContext、resources 和 `/tmp` emptyDir。
+- One-shot Sandbox Pod 必须拒绝 workspace root 外路径。
+- One-shot Sandbox Pod 不能注入 GitHub token。
+
+相关测试：
+
+- `tests/test_k8s_security_manifests.py`
+- `tests/test_sandbox_runtime.py`
 
 ## 6. 测试覆盖
 
@@ -658,6 +956,8 @@ Sandbox 和 GitHub Broker 都会把传入的 workspace path resolve 后校验：
 | `tests/test_sdk_tool_execution.py` | tool call envelope、approval、workspace path 传递 |
 | `tests/test_static_ui_contract.py` | 前端 replay、approval、user switcher 关键 UI contract |
 | `tests/test_schema_contract.py` | schema 字段和索引存在性 |
+| `tests/test_k8s_security_manifests.py` | v2 K8s securityContext、resources、Postgres PVC、Sandbox workspace 权限初始化 |
+| `tests/test_sandbox_runtime.py` | one-shot Sandbox Pod secret boundary、service account token、timeout、resources、workspace subPath/path escape |
 
 推荐本地验证命令：
 

@@ -86,6 +86,24 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: sandbox-workspace-permissions
+          image: cloud-agent-poc-v2:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /sandboxes/users
+              chown -R 10001:10001 /sandboxes
+              chmod -R g+rwX /sandboxes
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: sandbox-workspaces
+              mountPath: /sandboxes
       containers:
         - name: sandbox
           image: cloud-agent-poc-v2:local
