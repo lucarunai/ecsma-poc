@@ -692,7 +692,7 @@ Level 3 测试：
 
 ## 6. 推荐实施顺序
 
-如果目标是面试 bonus 加分，建议优先做两块。
+如果目标是优先补强系统可演示的核心能力，建议先做两块。
 
 第一块：Session Median 最小实现。
 
@@ -711,7 +711,7 @@ Level 3 测试：
 - manifest 单元测试
 - RBAC `can-i` 验证脚本或文档
 
-这两块最贴合面试官的问题：
+这两块最贴合当前系统的核心目标：
 
 - Session handling: 不只是能 resume，而是有 lease、heartbeat、auto recovery。
 - Security isolation: 不只是说 sandbox 没有 secret，而是有 Kubernetes 网络、RBAC、Pod security 的分层模型。

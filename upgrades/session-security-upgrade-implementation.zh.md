@@ -976,15 +976,13 @@ PYTHONPATH=src python3 -m unittest discover -v
 - Sandbox 网络隔离和 Kubernetes NetworkPolicy 仍可继续加强。
 - Event hash chain 可以证明应用层事件被修改，但不是外部不可篡改存证。
 
-## 8. 面试叙述建议
-
-可以这样总结：
+## 8. 系统总结
 
 当前 PoC 已经从“一个 agent workflow demo”升级为“durable session harness demo”。
 
 Session Layer 是 source of truth，保存 run/task/attempt/handoff/tool/event/approval 状态；Brain Layer 是 stateless-ish orchestrator，通过 lease/heartbeat claim run，crash 后由其他 worker 自动恢复；Sandbox Layer 只执行无 secret 的 workspace tool，GitHub Broker 独立持有 secret；Advanced 阶段又补了 schema version、hash-chain audit、replay consistency、human approval 和 user-level ownership。
 
-这不是完整 production SaaS，但已经覆盖面试官强调的两个核心点：
+这不是完整 production SaaS，但已经覆盖当前系统设计的两个核心方向：
 
 1. Session handling：状态持久化、自动恢复、多 worker claim、fresh query recovery context。
 2. Security isolation：sandbox 无 secret、workspace/user 隔离、高风险操作 human approval、可审计事件链。

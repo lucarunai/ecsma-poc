@@ -1,8 +1,8 @@
 # Architecture Diagrams
 
 These SVG diagrams document the current Cloud Agent Platform PoC architecture.
-They are intended for review decks, interview discussion, and implementation
-orientation.
+They are intended for architecture review, implementation orientation, and
+system design discussion.
 
 ## 1. Overall Architecture
 
@@ -50,4 +50,3 @@ envelopes.
 ![Tool and Pod Flow](tool-pod-flow.svg)
 
 [Open SVG](tool-pod-flow.svg)
-
