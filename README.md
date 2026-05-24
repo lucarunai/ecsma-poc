@@ -134,7 +134,8 @@ the token is not written to the checkout.
 ## Testing
 
 See [docs/testing.md](docs/testing.md) for the full test strategy, coverage map,
-and invariants.
+and invariants. The Session/Security upgrade testing matrix is documented in
+[upgrades/session-security-testing-strategy.zh.md](upgrades/session-security-testing-strategy.zh.md).
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -v
@@ -283,6 +284,13 @@ Use a separate local port so v1 and v2 can be inspected side by side:
 ```
 
 Then open `http://localhost:18082`.
+
+Run v2 smoke and security verification after deployment:
+
+```bash
+./scripts/k8s-smoke-v2.sh
+./scripts/k8s-security-verify-v2.sh
+```
 
 ## API
 

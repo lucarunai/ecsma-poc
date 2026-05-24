@@ -14,6 +14,10 @@ PYTHONPATH=src python3 -m unittest discover -v
 The default suite uses local fakes and does not call Claude, Postgres,
 Kubernetes, or GitHub.
 
+For the Session/Security upgrade testing matrix and v2 runtime verification
+plan, see
+[`upgrades/session-security-testing-strategy.zh.md`](../upgrades/session-security-testing-strategy.zh.md).
+
 ## Test Layers
 
 | Layer | Test files | What is covered |
@@ -59,3 +63,21 @@ The unit suite deliberately avoids live external dependencies:
 Live end-to-end checks should be run separately after deployment because they
 exercise credentials, network policy, cluster scheduling, and repository
 side effects.
+
+## V2 Runtime Verification
+
+After deploying `k8s-v2` and exposing Web on `http://127.0.0.1:18082`, run:
+
+```bash
+./scripts/k8s-smoke-v2.sh
+./scripts/k8s-security-verify-v2.sh
+```
+
+Use the chaos drills against an existing run when live Agent API quota is
+available:
+
+```bash
+RUN_ID=run_xxx ./scripts/k8s-chaos-drill-v2.sh brain-crash
+RUN_ID=run_xxx ./scripts/k8s-chaos-drill-v2.sh sandbox-pod-crash
+RUN_ID=run_xxx ./scripts/k8s-chaos-drill-v2.sh ownership
+```
