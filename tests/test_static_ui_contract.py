@@ -37,6 +37,31 @@ class StaticUiContractTests(unittest.TestCase):
         self.assertIn('/api/runs/${currentRunId}/replay', html)
         self.assertIn("Replay consistent", html)
 
+    def test_main_console_links_to_independent_ops_dashboard(self) -> None:
+        html = files("cloud_agent_poc").joinpath("static/index.html").read_text()
+
+        self.assertIn('href="/ops"', html)
+        self.assertIn("Ops dashboard", html)
+        self.assertNotIn('id="ops-status"', html)
+        self.assertNotIn('id="support-bundle-json"', html)
+
+    def test_independent_ops_dashboard_renders_metrics_alerts_and_support(self) -> None:
+        html = files("cloud_agent_poc").joinpath("static/ops.html").read_text()
+
+        self.assertIn("Cloud Agent Ops", html)
+        self.assertIn('id="ops-user-id"', html)
+        self.assertIn('id="ops-window"', html)
+        self.assertIn('id="metrics-grid"', html)
+        self.assertIn('id="alert-list"', html)
+        self.assertIn('id="recent-runs"', html)
+        self.assertIn('id="support-run-id"', html)
+        self.assertIn('id="ops-summary-json"', html)
+        self.assertIn('id="support-bundle-json"', html)
+        self.assertIn("/api/ops/metrics", html)
+        self.assertIn("/api/ops/alerts", html)
+        self.assertIn("/api/runs/${runId}/ops-summary", html)
+        self.assertIn("/api/runs/${runId}/support-bundle", html)
+
     def test_ui_renders_human_approval_controls(self) -> None:
         html = files("cloud_agent_poc").joinpath("static/index.html").read_text()
 

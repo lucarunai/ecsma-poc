@@ -153,6 +153,19 @@
         max-height: 260px;
       }
 
+      .ops-link {
+        align-items: center;
+        background: #334155;
+        border-radius: 8px;
+        color: #fff;
+        display: inline-flex;
+        font: inherit;
+        font-weight: 650;
+        min-height: 44px;
+        padding: 0 14px;
+        text-decoration: none;
+      }
+
       .approval-panel {
         background: #fffbeb;
         border: 1px solid #f3d18b;
@@ -606,6 +619,7 @@
         <div class="run-actions">
           <button id="run" type="button">Run agent</button>
           <button class="wake-button" id="wake" type="button" hidden>Wake run</button>
+          <a class="ops-link" href="/ops">Ops dashboard</a>
         </div>
       </section>
       <section class="panel tasks-panel">

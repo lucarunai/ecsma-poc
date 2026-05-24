@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cloud Agent Ops</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #eef2f7;
+        --panel: #ffffff;
+        --ink: #17212b;
+        --muted: #64748b;
+        --line: #d8dee8;
+        --accent: #0f766e;
+        --blue: #1d4ed8;
+        --warn: #b45309;
+        --danger: #b42318;
+        --ok: #166534;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      main {
+        display: grid;
+        gap: 16px;
+        margin: 0 auto;
+        max-width: 1800px;
+        min-height: 100vh;
+        padding: 22px 28px;
+      }
+
+      header {
+        align-items: end;
+        display: grid;
+        gap: 14px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        font-size: 28px;
+        letter-spacing: 0;
+        margin-bottom: 6px;
+      }
+
+      h2 {
+        font-size: 16px;
+        letter-spacing: 0;
+        margin-bottom: 10px;
+      }
+
+      h3 {
+        font-size: 13px;
+        letter-spacing: 0;
+        margin-bottom: 6px;
+      }
+
+      a,
+      button {
+        align-items: center;
+        border: 0;
+        border-radius: 8px;
+        color: #fff;
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        font-weight: 700;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 12px;
+        text-decoration: none;
+      }
+
+      a {
+        background: #334155;
+      }
+
+      button {
+        background: var(--accent);
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      input,
+      select {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+        font: inherit;
+        min-height: 40px;
+        padding: 0 10px;
+        width: 100%;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      .toolbar {
+        align-items: end;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(180px, 1fr) 130px auto auto;
+      }
+
+      .toolbar label,
+      .lookup label {
+        color: var(--muted);
+        display: grid;
+        font-size: 12px;
+        font-weight: 800;
+        gap: 5px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .metrics-grid {
+        grid-template-columns: repeat(6, minmax(130px, 1fr));
+      }
+
+      .metric {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-height: 86px;
+        padding: 12px;
+      }
+
+      .metric span {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 26px;
+        margin-top: 6px;
+      }
+
+      .metric small {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        margin-top: 3px;
+      }
+
+      .split {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(430px, 0.9fr) minmax(560px, 1.1fr);
+      }
+
+      .alert-list,
+      .run-list,
+      .bar-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .alert,
+      .run-row,
+      .bar-row {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+        min-width: 0;
+        padding: 10px;
+      }
+
+      .alert {
+        border-left: 5px solid var(--ok);
+      }
+
+      .alert.medium {
+        border-left-color: var(--warn);
+      }
+
+      .alert.high,
+      .alert.critical {
+        border-left-color: var(--danger);
+      }
+
+      .alert-line,
+      .run-row {
+        align-items: center;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        padding: 4px 8px;
+        white-space: nowrap;
+      }
+
+      .pill.ok {
+        border-color: #bbf7d0;
+        color: var(--ok);
+      }
+
+      .pill.fail,
+      .pill.critical,
+      .pill.high {
+        border-color: #fecaca;
+        color: var(--danger);
+      }
+
+      .pill.medium {
+        border-color: #fed7aa;
+        color: var(--warn);
+      }
+
+      .bar-row {
+        display: grid;
+        gap: 7px;
+      }
+
+      .bar-label {
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+      }
+
+      .bar-track {
+        background: #e2e8f0;
+        border-radius: 999px;
+        height: 8px;
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        background: var(--blue);
+        height: 8px;
+        width: 0;
+      }
+
+      .lookup {
+        align-items: end;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(260px, 1fr) 150px auto auto;
+      }
+
+      .json-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      pre {
+        background: #0f172a;
+        border-radius: 8px;
+        color: #e5edf7;
+        font-size: 12px;
+        line-height: 1.45;
+        margin: 0;
+        max-height: 480px;
+        overflow: auto;
+        padding: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      @media (max-width: 1180px) {
+        main {
+          padding: 16px;
+        }
+
+        header,
+        .toolbar,
+        .split,
+        .lookup,
+        .json-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .metrics-grid {
+          grid-template-columns: repeat(2, minmax(120px, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Cloud Agent Ops</h1>
+          <p class="muted" id="ops-status">Ready.</p>
+        </div>
+        <a href="/">Agent Console</a>
+      </header>
+
+      <section class="panel">
+        <div class="toolbar">
+          <label>
+            User
+            <input id="ops-user-id" value="Luca" autocomplete="off" />
+          </label>
+          <label>
+            Window
+            <select id="ops-window">
+              <option value="1">1h</option>
+              <option value="6">6h</option>
+              <option value="24" selected>24h</option>
+              <option value="72">72h</option>
+              <option value="168">7d</option>
+            </select>
+          </label>
+          <button id="ops-refresh" type="button">Refresh</button>
+          <button id="ops-autorefresh" type="button">Auto off</button>
+        </div>
+      </section>
+
+      <section class="grid metrics-grid" id="metrics-grid"></section>
+
+      <section class="split">
+        <div class="panel">
+          <h2>Alerts</h2>
+          <div class="alert-list" id="alert-list"></div>
+        </div>
+        <div class="panel">
+          <h2>Recent Runs</h2>
+          <div class="run-list" id="recent-runs"></div>
+        </div>
+      </section>
+
+      <section class="split">
+        <div class="panel">
+          <h2>Failure Kinds</h2>
+          <div class="bar-list" id="failure-bars"></div>
+        </div>
+        <div class="panel">
+          <h2>Tool Usage</h2>
+          <div class="bar-list" id="tool-bars"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Run Support</h2>
+        <div class="lookup">
+          <label>
+            Run ID
+            <input id="support-run-id" placeholder="run_..." autocomplete="off" />
+          </label>
+          <label>
+            Bundle
+            <select id="support-visibility">
+              <option value="internal" selected>Internal</option>
+              <option value="customer">Customer</option>
+            </select>
+          </label>
+          <button id="support-load" type="button">Load</button>
+          <button id="support-copy" type="button">Copy JSON</button>
+        </div>
+      </section>
+
+      <section class="json-grid">
+        <div class="panel">
+          <h2>Ops Summary</h2>
+          <pre id="ops-summary-json">Select a run.</pre>
+        </div>
+        <div class="panel">
+          <h2>Support Bundle</h2>
+          <pre id="support-bundle-json">Select a run.</pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const statusLine = document.querySelector("#ops-status");
+      const userInput = document.querySelector("#ops-user-id");
+      const windowSelect = document.querySelector("#ops-window");
+      const refreshButton = document.querySelector("#ops-refresh");
+      const autoButton = document.querySelector("#ops-autorefresh");
+      const metricsGrid = document.querySelector("#metrics-grid");
+      const alertList = document.querySelector("#alert-list");
+      const recentRuns = document.querySelector("#recent-runs");
+      const failureBars = document.querySelector("#failure-bars");
+      const toolBars = document.querySelector("#tool-bars");
+      const supportRunId = document.querySelector("#support-run-id");
+      const supportVisibility = document.querySelector("#support-visibility");
+      const supportLoad = document.querySelector("#support-load");
+      const supportCopy = document.querySelector("#support-copy");
+      const opsSummaryJson = document.querySelector("#ops-summary-json");
+      const supportBundleJson = document.querySelector("#support-bundle-json");
+      let latestBundle = null;
+      let autoTimer = null;
+
+      function userHeaders(extra = {}) {
+        const userId = userInput.value.trim() || "demo-user";
+        return { ...extra, "X-User-Id": userId };
+      }
+
+      function windowHours() {
+        return Number(windowSelect.value || "24");
+      }
+
+      function setStatus(text, isError = false) {
+        statusLine.textContent = text;
+        statusLine.style.color = isError ? "var(--danger)" : "var(--muted)";
+      }
+
+      async function fetchJson(url) {
+        const response = await fetch(url, { headers: userHeaders() });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed: ${response.status}`);
+        }
+        return data;
+      }
+
+      async function refreshOps() {
+        refreshButton.disabled = true;
+        setStatus("Refreshing ops evidence...");
+        try {
+          const [metrics, alerts] = await Promise.all([
+            fetchJson(`/api/ops/metrics?window_hours=${windowHours()}`),
+            fetchJson(`/api/ops/alerts?window_hours=${windowHours()}`),
+          ]);
+          renderMetrics(metrics);
+          renderAlerts(alerts);
+          renderRecentRuns(metrics.recent_runs || []);
+          renderBars(failureBars, metrics.failure_kinds || {});
+          renderBars(toolBars, (metrics.tool_counts && metrics.tool_counts.by_tool) || {});
+          setStatus(
+            `${metrics.user_id} | ${metrics.window_hours}h | ${alerts.alert_count} alerts | ${new Date(metrics.generated_at).toLocaleTimeString()}`,
+          );
+        } catch (error) {
+          setStatus(error.message, true);
+        } finally {
+          refreshButton.disabled = false;
+        }
+      }
+
+      function renderMetrics(metrics) {
+        const runCounts = metrics.run_counts || {};
+        const approvals = metrics.approval_summary || {};
+        const recovery = metrics.recovery_summary || {};
+        const sandbox = metrics.sandbox_summary || {};
+        const replay = metrics.replay_summary || {};
+        const cards = [
+          ["Runs", runCounts.total || 0, `${percent(runCounts.success_rate)} success`],
+          ["Failed", (runCounts.failed || 0) + (runCounts.blocked || 0), `${percent(runCounts.failure_rate)} failure`],
+          ["p95 Run", formatMs((metrics.run_duration_ms || {}).p95), `max ${formatMs((metrics.run_duration_ms || {}).max)}`],
+          ["Tools", (metrics.tool_counts || {}).total || 0, `p95 ${formatMs((metrics.tool_duration_ms || {}).p95)}`],
+          ["Approvals", approvals.total || 0, `${approvals.pending || 0} pending`],
+          ["Recovery", recovery.lease_expired_count || 0, `${recovery.resume_requested_count || 0} resumes`],
+          ["Replay Drift", replay.drift_count || 0, `${replay.checked_runs || 0} checked`],
+          ["Sandbox", sandbox.output_truncated_count || 0, "truncated outputs"],
+        ];
+        metricsGrid.replaceChildren(
+          ...cards.map(([label, value, hint]) => {
+            const node = document.createElement("article");
+            node.className = "metric";
+            node.innerHTML = `<span></span><strong></strong><small></small>`;
+            node.querySelector("span").textContent = label;
+            node.querySelector("strong").textContent = value;
+            node.querySelector("small").textContent = hint;
+            return node;
+          }),
+        );
+      }
+
+      function renderAlerts(alerts) {
+        const items = alerts.alerts || [];
+        alertList.replaceChildren();
+        if (!items.length) {
+          const node = document.createElement("div");
+          node.className = "alert";
+          node.innerHTML = `<div class="alert-line"><strong>No active alerts</strong><span class="pill ok">healthy</span></div><p class="muted">No Day 2 alert rules fired for this user and window.</p>`;
+          alertList.append(node);
+          return;
+        }
+        items.forEach((alert) => {
+          const node = document.createElement("article");
+          node.className = `alert ${alert.severity}`;
+          node.innerHTML = `
+            <div class="alert-line">
+              <strong></strong>
+              <span class="pill"></span>
+            </div>
+            <p class="muted"></p>
+            <p class="muted"></p>
+          `;
+          node.querySelector("strong").textContent = alert.summary;
+          const pill = node.querySelector(".pill");
+          pill.textContent = alert.severity;
+          pill.classList.add(alert.severity);
+          node.querySelectorAll(".muted")[0].textContent = alert.type;
+          node.querySelectorAll(".muted")[1].textContent = alert.next_action;
+          alertList.append(node);
+        });
+      }
+
+      function renderRecentRuns(runs) {
+        recentRuns.replaceChildren();
+        if (!runs.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No runs in this window.";
+          recentRuns.append(empty);
+          return;
+        }
+        runs.forEach((run) => {
+          const node = document.createElement("button");
+          node.className = "run-row";
+          node.type = "button";
+          node.innerHTML = `
+            <span></span>
+            <span class="pill"></span>
+          `;
+          node.querySelector("span").textContent = `${run.run_id} | ${run.prompt.preview || ""}`;
+          const pill = node.querySelector(".pill");
+          pill.textContent = run.status;
+          pill.classList.add(run.status === "completed" ? "ok" : run.status === "failed" ? "fail" : "");
+          node.addEventListener("click", () => {
+            supportRunId.value = run.run_id;
+            loadRunSupport();
+          });
+          recentRuns.append(node);
+        });
+      }
+
+      function renderBars(container, values) {
+        container.replaceChildren();
+        const entries = Object.entries(values).sort((a, b) => b[1] - a[1]);
+        if (!entries.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No data.";
+          container.append(empty);
+          return;
+        }
+        const max = Math.max(...entries.map((entry) => entry[1]));
+        entries.slice(0, 10).forEach(([label, value]) => {
+          const node = document.createElement("div");
+          node.className = "bar-row";
+          node.innerHTML = `
+            <div class="bar-label"><strong></strong><span class="muted"></span></div>
+            <div class="bar-track"><div class="bar-fill"></div></div>
+          `;
+          node.querySelector("strong").textContent = label;
+          node.querySelector(".muted").textContent = value;
+          node.querySelector(".bar-fill").style.width = `${Math.max(4, (value / max) * 100)}%`;
+          container.append(node);
+        });
+      }
+
+      async function loadRunSupport() {
+        const runId = supportRunId.value.trim();
+        if (!runId) {
+          setStatus("Enter a run id first.", true);
+          return;
+        }
+        supportLoad.disabled = true;
+        setStatus(`Loading ${runId}...`);
+        try {
+          const [summary, bundle] = await Promise.all([
+            fetchJson(`/api/runs/${runId}/ops-summary`),
+            fetchJson(`/api/runs/${runId}/support-bundle?visibility=${supportVisibility.value}`),
+          ]);
+          latestBundle = bundle;
+          opsSummaryJson.textContent = JSON.stringify(summary, null, 2);
+          supportBundleJson.textContent = JSON.stringify(bundle, null, 2);
+          setStatus(`${runId} | ${bundle.triage.category} | ${bundle.triage.severity}`);
+        } catch (error) {
+          setStatus(error.message, true);
+        } finally {
+          supportLoad.disabled = false;
+        }
+      }
+
+      async function copyBundle() {
+        if (!latestBundle) {
+          setStatus("Load a support bundle first.", true);
+          return;
+        }
+        await navigator.clipboard.writeText(JSON.stringify(latestBundle, null, 2));
+        setStatus("Support bundle copied.");
+      }
+
+      function percent(value) {
+        return `${Math.round((value || 0) * 100)}%`;
+      }
+
+      function formatMs(value) {
+        if (value === null || value === undefined) {
+          return "n/a";
+        }
+        if (value < 1000) {
+          return `${value}ms`;
+        }
+        return `${Math.round(value / 100) / 10}s`;
+      }
+
+      refreshButton.addEventListener("click", refreshOps);
+      supportLoad.addEventListener("click", loadRunSupport);
+      supportCopy.addEventListener("click", copyBundle);
+      autoButton.addEventListener("click", () => {
+        if (autoTimer) {
+          clearInterval(autoTimer);
+          autoTimer = null;
+          autoButton.textContent = "Auto off";
+          return;
+        }
+        autoTimer = setInterval(refreshOps, 15000);
+        autoButton.textContent = "Auto 15s";
+        refreshOps();
+      });
+      [userInput, windowSelect].forEach((input) => {
+        input.addEventListener("change", refreshOps);
+      });
+
+      refreshOps();
+    </script>
+  </body>
+</html>

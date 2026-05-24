@@ -255,12 +255,18 @@ async def wake_run(
     run_id: str,
     user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
 ) -> dict[str, str]:
-    run = await store.wake_run(run_id, user_id=normalize_user_id(user_id))
-    if run is None:
+    normalized_user_id = normalize_user_id(user_id)
+    existing_run = await store.get_run(run_id, user_id=normalized_user_id)
+    if existing_run is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
+    if existing_run["status"] not in {"blocked", "failed"}:
         raise HTTPException(
             status_code=409,
             detail="Only blocked or failed runs can be woken.",
         )
+    run = await store.wake_run(run_id, user_id=normalized_user_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
     await store.append_event(
         session_id=run["session_id"],
         run_id=run_id,
@@ -644,6 +650,58 @@ async def replay_run(
     if report is None:
         raise HTTPException(status_code=404, detail="Run was not found.")
     return report
+
+
+@app.get("/internal/runs/{run_id}/ops-summary")
+async def ops_run_summary(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    summary = await store.get_run_ops_summary(
+        run_id,
+        user_id=normalize_user_id(user_id),
+    )
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
+    return summary
+
+
+@app.get("/internal/runs/{run_id}/support-bundle")
+async def support_bundle(
+    run_id: str,
+    visibility: str = Query(default="internal", pattern="^(internal|customer)$"),
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    bundle = await store.get_run_support_bundle(
+        run_id,
+        user_id=normalize_user_id(user_id),
+        visibility=visibility,
+    )
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
+    return bundle
+
+
+@app.get("/internal/ops/metrics")
+async def ops_metrics(
+    window_hours: int = Query(default=24, ge=1, le=168),
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    return await store.get_ops_metric_snapshot(
+        user_id=normalize_user_id(user_id),
+        window_hours=window_hours,
+    )
+
+
+@app.get("/internal/ops/alerts")
+async def ops_alerts(
+    window_hours: int = Query(default=24, ge=1, le=168),
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    return await store.get_ops_alerts(
+        user_id=normalize_user_id(user_id),
+        window_hours=window_hours,
+    )
 
 
 @app.post("/internal/agent-transcripts")

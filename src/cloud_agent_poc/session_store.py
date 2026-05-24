@@ -10,6 +10,12 @@ from psycopg.rows import dict_row
 
 from .domain import PlannedTask, RunRecord, SessionEvent, TaskAttemptRecord, TaskRecord
 from .ownership import DEFAULT_USER_ID, normalize_user_id
+from .ops import (
+    build_ops_alerts,
+    build_ops_metric_snapshot,
+    build_ops_run_summary,
+    build_support_bundle,
+)
 from .session_contracts import (
     event_hash,
     event_payload_hash,
@@ -1073,6 +1079,253 @@ class PostgresSessionStore:
             events=events,
             materialized=materialized,
         )
+
+    async def get_run_ops_summary(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        records = await self.get_run_operational_records(run_id, user_id=user_id)
+        if records is None:
+            return None
+        return build_ops_run_summary(**records)
+
+    async def get_run_support_bundle(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+        visibility: str = "internal",
+    ) -> dict[str, Any] | None:
+        records = await self.get_run_operational_records(run_id, user_id=user_id)
+        if records is None:
+            return None
+        return build_support_bundle(**records, visibility=visibility)
+
+    async def get_ops_metric_snapshot(
+        self,
+        *,
+        user_id: str | None = None,
+        window_hours: int = 24,
+    ) -> dict[str, Any]:
+        normalized_user_id = normalize_user_id(user_id)
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            run_cursor = await conn.execute(
+                """
+                SELECT id, session_id, user_id, prompt, status, started_at,
+                       ended_at, attempt_count, created_at
+                FROM runs
+                WHERE user_id = %s
+                  AND created_at >= NOW() - (%s * INTERVAL '1 hour')
+                ORDER BY created_at DESC
+                """,
+                (normalized_user_id, window_hours),
+            )
+            runs = [dict(row) for row in await run_cursor.fetchall()]
+            run_ids = [run["id"] for run in runs]
+            if not run_ids:
+                return build_ops_metric_snapshot(
+                    user_id=normalized_user_id,
+                    window_hours=window_hours,
+                    runs=[],
+                    tasks=[],
+                    task_attempts=[],
+                    tool_calls=[],
+                    tool_executions=[],
+                    approvals=[],
+                    events=[],
+                    replay_reports=[],
+                )
+            task_cursor = await conn.execute(
+                """
+                SELECT id, run_id, seq, kind, title, status, created_at,
+                       started_at, ended_at
+                FROM tasks
+                WHERE run_id = ANY(%s::text[])
+                ORDER BY run_id, seq ASC
+                """,
+                (run_ids,),
+            )
+            attempt_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, attempt_no, status, failure_kind,
+                       failure_reason, started_at, ended_at, created_at
+                FROM task_attempts
+                WHERE run_id = ANY(%s::text[])
+                ORDER BY created_at ASC
+                """,
+                (run_ids,),
+            )
+            tool_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, task_attempt_id, tool_name, status,
+                       latest_execution_id, failure_kind, created_at, ended_at
+                FROM tool_calls
+                WHERE run_id = ANY(%s::text[])
+                ORDER BY created_at ASC
+                """,
+                (run_ids,),
+            )
+            execution_cursor = await conn.execute(
+                """
+                SELECT execution_id, run_id, task_id, task_attempt_id,
+                       tool_call_id, tool_name, execution_status, failure_kind,
+                       envelope, created_at
+                FROM tool_executions
+                WHERE run_id = ANY(%s::text[])
+                ORDER BY created_at ASC
+                """,
+                (run_ids,),
+            )
+            approval_cursor = await conn.execute(
+                """
+                SELECT id, run_id, status, tool_name, created_at, decided_at
+                FROM approval_requests
+                WHERE run_id = ANY(%s::text[])
+                ORDER BY created_at ASC
+                """,
+                (run_ids,),
+            )
+            event_cursor = await conn.execute(
+                """
+                SELECT id, session_id, run_id, task_id, user_id, event_type,
+                       payload, created_at
+                FROM session_events
+                WHERE run_id = ANY(%s::text[])
+                  AND user_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_ids, normalized_user_id),
+            )
+            tasks = [dict(row) for row in await task_cursor.fetchall()]
+            task_attempts = [dict(row) for row in await attempt_cursor.fetchall()]
+            tool_calls = [dict(row) for row in await tool_cursor.fetchall()]
+            tool_executions = [dict(row) for row in await execution_cursor.fetchall()]
+            approvals = [dict(row) for row in await approval_cursor.fetchall()]
+            events = [dict(row) for row in await event_cursor.fetchall()]
+        replay_reports = []
+        for run in runs[:10]:
+            report = await self.get_run_replay_report(
+                run["id"],
+                user_id=normalized_user_id,
+            )
+            if report is not None:
+                replay_reports.append(report)
+        return build_ops_metric_snapshot(
+            user_id=normalized_user_id,
+            window_hours=window_hours,
+            runs=runs,
+            tasks=tasks,
+            task_attempts=task_attempts,
+            tool_calls=tool_calls,
+            tool_executions=tool_executions,
+            approvals=approvals,
+            events=events,
+            replay_reports=replay_reports,
+        )
+
+    async def get_ops_alerts(
+        self,
+        *,
+        user_id: str | None = None,
+        window_hours: int = 24,
+    ) -> dict[str, Any]:
+        metric_snapshot = await self.get_ops_metric_snapshot(
+            user_id=user_id,
+            window_hours=window_hours,
+        )
+        return build_ops_alerts(metric_snapshot=metric_snapshot)
+
+    async def get_run_operational_records(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        run = await self.get_run(run_id, user_id=user_id)
+        if run is None:
+            return None
+        tasks = await self.get_tasks(run_id)
+        replay_report = await self.get_run_replay_report(run_id, user_id=user_id)
+        events = await self.list_run_events(run_id, user_id=user_id)
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            attempt_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, attempt_no, status, claude_session_id,
+                       failure_kind, failure_reason, last_heartbeat_at,
+                       heartbeat_expires_at, started_at, ended_at, created_at
+                FROM task_attempts
+                WHERE run_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            tool_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, task_attempt_id, tool_name, input,
+                       status, latest_execution_id, failure_kind, created_at,
+                       ended_at
+                FROM tool_calls
+                WHERE run_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            execution_cursor = await conn.execute(
+                """
+                SELECT execution_id, run_id, task_id, task_attempt_id, tool_call_id,
+                       tool_name, execution_status, failure_kind, envelope, created_at
+                FROM tool_executions
+                WHERE run_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            approval_cursor = await conn.execute(
+                """
+                SELECT id, session_id, run_id, user_id, task_id, task_attempt_id,
+                       tool_call_id, tool_name, tool_input, reason, status,
+                       requested_by, decided_by, decision_reason, created_at,
+                       decided_at
+                FROM approval_requests
+                WHERE run_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            handoff_cursor = await conn.execute(
+                """
+                SELECT id, session_id, run_id, from_task_id, to_task_id, status,
+                       summary, payload, claude_session_id, transcript_id, created_at
+                FROM task_handoffs
+                WHERE run_id = %s
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            task_attempts = await attempt_cursor.fetchall()
+            tool_calls = await tool_cursor.fetchall()
+            tool_executions = await execution_cursor.fetchall()
+            approvals = await approval_cursor.fetchall()
+            handoffs = await handoff_cursor.fetchall()
+        return {
+            "run": dict(run),
+            "tasks": [task.__dict__ for task in tasks],
+            "task_attempts": [dict(row) for row in task_attempts],
+            "tool_calls": [dict(row) for row in tool_calls],
+            "tool_executions": [dict(row) for row in tool_executions],
+            "approvals": [dict(row) for row in approvals],
+            "handoffs": [dict(row) for row in handoffs],
+            "events": events,
+            "replay_report": replay_report,
+        }
 
     async def list_run_events(
         self,

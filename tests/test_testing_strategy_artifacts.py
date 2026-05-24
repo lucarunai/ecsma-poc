@@ -15,11 +15,33 @@ class TestingStrategyArtifactTests(unittest.TestCase):
         self.assertIn("./scripts/k8s-security-verify-v2.sh", strategy)
         self.assertIn("./scripts/k8s-chaos-drill-v2.sh", strategy)
 
+    def test_day2_operations_plan_document_exists(self) -> None:
+        plan = Path("upgrades/day2-operations-upgrade-plan.zh.md").read_text()
+        implementation = Path(
+            "upgrades/day2-operations-upgrade-implementation.zh.md"
+        ).read_text()
+
+        self.assertIn("Day 2 Operations", plan)
+        self.assertIn("ops_run_summary.v1", plan)
+        self.assertIn("support_bundle.v1", plan)
+        self.assertIn("ops_metric_snapshot.v1", plan)
+        self.assertIn("scripts/k8s-ops-verify-v2.sh", plan)
+        self.assertIn("Customer Support", plan)
+        self.assertIn("Continuous Improvement", plan)
+        self.assertIn("ops_run_summary.v1", implementation)
+        self.assertIn("support_bundle.v1", implementation)
+        self.assertIn("ops_metric_snapshot.v1", implementation)
+        self.assertIn("ops_alerts.v1", implementation)
+        self.assertIn("独立 Ops Dashboard", implementation)
+        self.assertIn("scripts/k8s-ops-verify-v2.sh", implementation)
+        self.assertIn("Redaction", implementation)
+
     def test_v2_runtime_verification_scripts_are_executable(self) -> None:
         for script_path in [
             Path("scripts/k8s-smoke-v2.sh"),
             Path("scripts/k8s-security-verify-v2.sh"),
             Path("scripts/k8s-chaos-drill-v2.sh"),
+            Path("scripts/k8s-ops-verify-v2.sh"),
         ]:
             with self.subTest(script_path=str(script_path)):
                 mode = script_path.stat().st_mode
@@ -62,6 +84,19 @@ class TestingStrategyArtifactTests(unittest.TestCase):
         self.assertIn("failed", script)
         self.assertIn("orphaned", script)
         self.assertIn("404", script)
+
+    def test_v2_ops_script_checks_day2_contracts(self) -> None:
+        script = Path("scripts/k8s-ops-verify-v2.sh").read_text()
+
+        self.assertIn("cloud-agent-poc-v2", script)
+        self.assertIn("/ops", script)
+        self.assertIn("/api/ops/metrics", script)
+        self.assertIn("/api/ops/alerts", script)
+        self.assertIn("ops_metric_snapshot.v1", script)
+        self.assertIn("ops_alerts.v1", script)
+        self.assertIn("ops_run_summary.v1", script)
+        self.assertIn("support_bundle.v1", script)
+        self.assertIn("visibility=customer", script)
 
 
 if __name__ == "__main__":

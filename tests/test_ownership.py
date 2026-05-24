@@ -28,6 +28,23 @@ class OwnershipContractTests(unittest.TestCase):
         self.assertIn("user_id=user_id", source)
         self.assertIn("user_id=normalize_user_id(user_id)", source)
 
+    def test_wake_run_checks_ownership_before_status_conflict(self) -> None:
+        source = Path("src/cloud_agent_poc/session_app.py").read_text()
+
+        wake_start = source.index('@app.post("/api/runs/{run_id}/wake")')
+        wake_end = source.index('@app.get("/api/sessions/{session_id}/events")')
+        wake_source = source[wake_start:wake_end]
+
+        self.assertIn("existing_run = await store.get_run", wake_source)
+        self.assertLess(
+            wake_source.index("raise HTTPException(status_code=404"),
+            wake_source.index('existing_run["status"] not in {"blocked", "failed"}'),
+        )
+        self.assertLess(
+            wake_source.index('existing_run["status"] not in {"blocked", "failed"}'),
+            wake_source.index("run = await store.wake_run"),
+        )
+
     def test_workspace_path_is_user_scoped(self) -> None:
         source = Path("src/cloud_agent_poc/sandbox_app.py").read_text()
         orchestrator = Path("src/cloud_agent_poc/brain/orchestrator.py").read_text()

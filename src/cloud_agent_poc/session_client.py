@@ -488,3 +488,67 @@ class SessionLayerClient:
                 return None
             response.raise_for_status()
             return response.json()
+
+    async def get_run_ops_summary(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(
+                f"/internal/runs/{run_id}/ops-summary",
+                headers=self._user_headers(user_id),
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def get_run_support_bundle(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+        visibility: str = "internal",
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(
+                f"/internal/runs/{run_id}/support-bundle",
+                params={"visibility": visibility},
+                headers=self._user_headers(user_id),
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def get_ops_metric_snapshot(
+        self,
+        *,
+        user_id: str | None = None,
+        window_hours: int = 24,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(
+                "/internal/ops/metrics",
+                params={"window_hours": window_hours},
+                headers=self._user_headers(user_id),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def get_ops_alerts(
+        self,
+        *,
+        user_id: str | None = None,
+        window_hours: int = 24,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(
+                "/internal/ops/alerts",
+                params={"window_hours": window_hours},
+                headers=self._user_headers(user_id),
+            )
+            response.raise_for_status()
+            return response.json()
