@@ -65,7 +65,9 @@ class StoreStub:
         self.calls = []
         self.tool_calls = []
         self.tool_call_updates = []
+        self.approvals = {}
         self.operations = []
+        self.next_approval_status = "approved"
 
     async def create_tool_call(self, **kwargs):
         self.tool_calls.append(kwargs)
@@ -80,6 +82,41 @@ class StoreStub:
         self.calls.append(kwargs)
         self.operations.append(("record_tool_execution", kwargs["envelope"]["tool_name"]))
         return kwargs["envelope"]["execution_id"]
+
+    async def create_approval_request(self, **kwargs):
+        approval = {
+            "id": "approval_test",
+            "session_id": "sess_test",
+            "run_id": kwargs["run_id"],
+            "task_id": kwargs["task_id"],
+            "task_attempt_id": kwargs["task_attempt_id"],
+            "tool_call_id": kwargs["tool_call_id"],
+            "tool_name": kwargs["tool_name"],
+            "tool_input": kwargs["tool_input"],
+            "reason": kwargs["reason"],
+            "status": "pending",
+            "requested_by": kwargs["requested_by"],
+            "decided_by": None,
+            "decision_reason": None,
+        }
+        self.approvals[approval["id"]] = approval
+        self.operations.append(("create_approval_request", kwargs["tool_name"]))
+        return approval
+
+    async def get_approval_request(self, approval_id):
+        approval = dict(self.approvals[approval_id])
+        approval["status"] = self.next_approval_status
+        if approval["status"] == "approved":
+            approval["decided_by"] = "web-ui"
+        self.approvals[approval_id] = approval
+        return approval
+
+    async def expire_approval_request(self, approval_id):
+        approval = dict(self.approvals[approval_id])
+        approval["status"] = "expired"
+        approval["decision_reason"] = "approval_timeout"
+        self.approvals[approval_id] = approval
+        return approval
 
 
 class ToolErrorSandboxStub(SandboxStub):
@@ -355,6 +392,95 @@ class CodingToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0][0], "tool.call.requested")
         self.assertEqual(events[1][0], "tool.call.failed")
         self.assertEqual(events[1][1]["failure_kind"], "sandbox_request_error")
+
+    async def test_push_waits_for_human_approval_before_broker_execution(self) -> None:
+        store = StoreStub()
+        events = []
+        broker = BrokerStub()
+        factory = CodingToolServerFactory(
+            SandboxStub(),
+            broker,
+            store,
+            approval_poll_seconds=0,
+            approval_timeout_seconds=1,
+        )
+        task = TaskRecord(
+            id="task_test",
+            run_id="run_0123456789abcdef0123456789abcdef",
+            seq=1,
+            kind="model_task",
+            title="Push",
+            description="Push a branch.",
+            acceptance_criteria=[],
+            status="running",
+        )
+
+        async def emit(event_type, payload):
+            events.append((event_type, payload))
+
+        envelope = await factory._execute_tool(
+            task.run_id,
+            task,
+            emit,
+            "push_current_git_branch",
+            {},
+            task_attempt_id="attempt_test",
+        )
+
+        self.assertEqual(envelope.execution_id, "sbxexec_broker")
+        self.assertEqual(broker.executed_tools, ["push_current_git_branch"])
+        self.assertEqual(events[1][0], "approval.requested")
+        self.assertEqual(
+            store.operations[:4],
+            [
+                ("create_tool_call", "push_current_git_branch"),
+                ("create_approval_request", "push_current_git_branch"),
+                ("record_tool_execution", "push_current_git_branch"),
+                ("update_tool_call", "succeeded"),
+            ],
+        )
+
+    async def test_denied_human_approval_blocks_tool_execution(self) -> None:
+        store = StoreStub()
+        store.next_approval_status = "denied"
+        events = []
+        broker = BrokerStub()
+        factory = CodingToolServerFactory(
+            SandboxStub(),
+            broker,
+            store,
+            approval_poll_seconds=0,
+            approval_timeout_seconds=1,
+        )
+        task = TaskRecord(
+            id="task_test",
+            run_id="run_0123456789abcdef0123456789abcdef",
+            seq=1,
+            kind="model_task",
+            title="Push",
+            description="Push a branch.",
+            acceptance_criteria=[],
+            status="running",
+        )
+
+        async def emit(event_type, payload):
+            events.append((event_type, payload))
+
+        with self.assertRaises(SandboxLayerError):
+            await factory._execute_tool(
+                task.run_id,
+                task,
+                emit,
+                "push_current_git_branch",
+                {},
+                task_attempt_id="attempt_test",
+            )
+
+        self.assertEqual(broker.executed_tools, [])
+        self.assertEqual(store.tool_call_updates[0][1], "failed")
+        self.assertEqual(store.tool_call_updates[0][2]["failure_kind"], "human_denied")
+        self.assertEqual(events[1][0], "approval.requested")
+        self.assertEqual(events[2][0], "tool.call.failed")
 
 
 if __name__ == "__main__":

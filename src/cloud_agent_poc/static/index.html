@@ -112,6 +112,129 @@
         white-space: pre-wrap;
       }
 
+      .replay-panel {
+        background: #f8fafc;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+      }
+
+      .replay-header {
+        align-items: center;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .replay-status {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .replay-status.ok {
+        color: var(--ok);
+      }
+
+      .replay-status.fail {
+        color: var(--danger);
+      }
+
+      .replay-button {
+        min-height: 34px;
+        padding: 0 10px;
+      }
+
+      .replay-json {
+        font-size: 12px;
+        max-height: 260px;
+      }
+
+      .approval-panel {
+        background: #fffbeb;
+        border: 1px solid #f3d18b;
+        border-radius: 8px;
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+      }
+
+      .approval-panel[hidden] {
+        display: none;
+      }
+
+      .approval-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .approval-card {
+        background: #fff;
+        border: 1px solid #f3d18b;
+        border-radius: 8px;
+        display: grid;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .approval-line {
+        align-items: center;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .approval-tool {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .approval-status {
+        color: var(--accent-2);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .approval-status.approved {
+        color: var(--ok);
+      }
+
+      .approval-status.denied,
+      .approval-status.expired {
+        color: var(--danger);
+      }
+
+      .approval-reason {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .approval-input {
+        font-size: 11px;
+        max-height: 120px;
+      }
+
+      .approval-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .approval-actions button {
+        min-height: 34px;
+        padding: 0 10px;
+      }
+
+      .approval-deny {
+        background: var(--danger);
+      }
+
       .task-list {
         display: grid;
         gap: 8px;
@@ -332,6 +455,36 @@
         width: 100%;
       }
 
+      .user-switcher {
+        align-items: end;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .user-switcher label {
+        color: var(--muted);
+        display: grid;
+        font-size: 12px;
+        font-weight: 750;
+        gap: 6px;
+      }
+
+      .user-switcher input {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+        font: inherit;
+        min-height: 40px;
+        padding: 0 10px;
+        width: 100%;
+      }
+
+      .switch-user-button {
+        min-height: 40px;
+      }
+
       button {
         background: var(--accent);
         border: 0;
@@ -442,6 +595,13 @@
             </div>
           </div>
         </div>
+        <div class="user-switcher">
+          <label>
+            User
+            <input id="user-id" value="Luca" autocomplete="off" />
+          </label>
+          <button class="switch-user-button" id="switch-user" type="button">Switch</button>
+        </div>
         <textarea id="prompt">Based on https://github.com/lucarunai/demo branch test, build a simple hello world Python application, add tests, and open a pull request to main.</textarea>
         <div class="run-actions">
           <button id="run" type="button">Run agent</button>
@@ -452,6 +612,17 @@
         <h2>Run</h2>
         <div class="run-plan" id="run-plan" hidden>
           <pre class="run-criteria-json" id="run-criteria-json"></pre>
+        </div>
+        <div class="replay-panel" id="replay-panel">
+          <div class="replay-header">
+            <span class="replay-status" id="replay-status">Replay check pending.</span>
+            <button class="replay-button" id="replay-refresh" type="button">Replay</button>
+          </div>
+          <pre class="replay-json" id="replay-json">No run selected.</pre>
+        </div>
+        <div class="approval-panel" id="approval-panel" hidden>
+          <h2>Human Approval</h2>
+          <div class="approval-list" id="approval-list"></div>
         </div>
         <h2>Tasks</h2>
         <ol class="task-list" id="task-list">
@@ -472,12 +643,29 @@
       const taskList = document.querySelector("#task-list");
       const runPlan = document.querySelector("#run-plan");
       const runCriteriaJson = document.querySelector("#run-criteria-json");
+      const replayStatus = document.querySelector("#replay-status");
+      const replayJson = document.querySelector("#replay-json");
+      const replayRefresh = document.querySelector("#replay-refresh");
+      const approvalPanel = document.querySelector("#approval-panel");
+      const approvalList = document.querySelector("#approval-list");
       const promptInput = document.querySelector("#prompt");
+      const userInput = document.querySelector("#user-id");
+      const switchUserButton = document.querySelector("#switch-user");
       const tasks = new Map();
+      const approvals = new Map();
       let runCriteria = [];
       let sessionId;
       let currentRunId;
       let latestEventId = 0;
+      let eventStream;
+
+      function currentUserId() {
+        return userInput.value.trim() || "demo-user";
+      }
+
+      function userHeaders(extra = {}) {
+        return { ...extra, "X-User-Id": currentUserId() };
+      }
 
       function renderRunPlan() {
         if (!runCriteria.length) {
@@ -487,6 +675,106 @@
         }
         runPlan.hidden = false;
         runCriteriaJson.textContent = JSON.stringify(runCriteria, null, 2);
+      }
+
+      function resetReplay() {
+        replayStatus.className = "replay-status";
+        replayStatus.textContent = "Replay check pending.";
+        replayJson.textContent = currentRunId ? "Waiting for events." : "No run selected.";
+      }
+
+      function renderApprovals() {
+        approvalList.replaceChildren();
+        const visibleApprovals = [...approvals.values()].filter(
+          (approval) => approval.status === "pending",
+        );
+        approvalPanel.hidden = visibleApprovals.length === 0;
+        visibleApprovals.forEach((approval) => {
+          const card = document.createElement("article");
+          card.className = "approval-card";
+          card.innerHTML = `
+            <div class="approval-line">
+              <span class="approval-tool"></span>
+              <span class="approval-status"></span>
+            </div>
+            <div class="approval-reason"></div>
+            <pre class="approval-input"></pre>
+            <div class="approval-actions">
+              <button class="approval-approve" type="button">Approve</button>
+              <button class="approval-deny" type="button">Deny</button>
+            </div>
+          `;
+          card.querySelector(".approval-tool").textContent = approval.tool_name;
+          const status = card.querySelector(".approval-status");
+          status.textContent = approval.status;
+          status.classList.add(approval.status);
+          card.querySelector(".approval-reason").textContent = approval.reason;
+          card.querySelector(".approval-input").textContent = JSON.stringify(
+            approval.tool_input || {},
+            null,
+            2,
+          );
+          card.querySelector(".approval-approve").addEventListener("click", () => {
+            decideApproval(approval.approval_id, "approved");
+          });
+          card.querySelector(".approval-deny").addEventListener("click", () => {
+            decideApproval(approval.approval_id, "denied");
+          });
+          approvalList.append(card);
+        });
+      }
+
+      async function decideApproval(approvalId, decision) {
+        const approval = approvals.get(approvalId);
+        if (approval) {
+          approval.status = decision;
+          approvals.set(approvalId, approval);
+          renderApprovals();
+        }
+        const response = await fetch(`/api/approvals/${approvalId}/decision`, {
+          method: "POST",
+          headers: userHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ decision }),
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          if (approval) {
+            approval.status = "pending";
+            approvals.set(approvalId, approval);
+            renderApprovals();
+          }
+          runStatus.textContent = data.detail || "Approval decision failed.";
+          runStatus.title = runStatus.textContent;
+        }
+      }
+
+      async function refreshReplayReport() {
+        if (!currentRunId) {
+          resetReplay();
+          return;
+        }
+        replayRefresh.disabled = true;
+        replayStatus.className = "replay-status";
+        replayStatus.textContent = "Checking replay consistency...";
+        try {
+          const response = await fetch(`/api/runs/${currentRunId}/replay`, {
+            headers: userHeaders(),
+          });
+          const report = await response.json();
+          if (!response.ok) {
+            throw new Error(report.detail || "Replay check failed.");
+          }
+          replayStatus.className = `replay-status ${report.consistent ? "ok" : "fail"}`;
+          replayStatus.textContent = report.consistent
+            ? "Replay consistent"
+            : `Replay drift: ${report.errors.length} errors, ${report.differences.length} differences`;
+          replayJson.textContent = JSON.stringify(report, null, 2);
+        } catch (error) {
+          replayStatus.className = "replay-status fail";
+          replayStatus.textContent = error.message;
+        } finally {
+          replayRefresh.disabled = false;
+        }
       }
 
       function renderTasks() {
@@ -569,10 +857,29 @@
 
       function resetTasks() {
         tasks.clear();
+        approvals.clear();
         runCriteria = [];
         wakeButton.hidden = true;
         renderRunPlan();
         renderTasks();
+        renderApprovals();
+        resetReplay();
+      }
+
+      function resetSessionState() {
+        if (eventStream) {
+          eventStream.close();
+          eventStream = null;
+        }
+        sessionId = undefined;
+        currentRunId = undefined;
+        latestEventId = 0;
+        timeline.replaceChildren();
+        sessionLabel.textContent = "Starting session...";
+        sessionLabel.title = "Starting session...";
+        runStatus.textContent = "No run yet.";
+        runStatus.title = "No run yet.";
+        resetTasks();
       }
 
       function updateTaskFromEvent(event) {
@@ -660,6 +967,43 @@
         renderTasks();
       }
 
+      function updateApprovalFromEvent(event) {
+        if (!event.event_type.startsWith("approval.")) {
+          return;
+        }
+        const approvalId = event.payload.approval_id;
+        if (!approvalId) {
+          return;
+        }
+        const existing = approvals.get(approvalId) || {};
+        const next = {
+          ...existing,
+          ...event.payload,
+          approval_id: approvalId,
+          status: event.payload.status || event.event_type.replace("approval.", ""),
+        };
+        approvals.set(approvalId, next);
+        const task = tasks.get(next.task_id);
+        if (task && next.tool_call_id) {
+          task.tools = task.tools || new Map();
+          const tool = task.tools.get(next.tool_call_id) || {
+            tool_call_id: next.tool_call_id,
+            tool_name: next.tool_name,
+          };
+          tool.status =
+            event.event_type === "approval.requested"
+              ? "awaiting_approval"
+              : event.event_type === "approval.approved"
+                ? "approved"
+                : ["approval.denied", "approval.expired"].includes(event.event_type)
+                  ? "failed"
+                  : tool.status;
+          task.tools.set(next.tool_call_id, tool);
+          renderTasks();
+        }
+        renderApprovals();
+      }
+
       function addEvent(event) {
         latestEventId = Math.max(latestEventId, event.id || 0);
         const node = document.createElement("article");
@@ -682,27 +1026,39 @@
           runStatus.title = event.event_type;
           currentRunId = event.payload.run_id || currentRunId;
           wakeButton.hidden = !["run.blocked", "run.failed"].includes(event.event_type);
+          if (["run.completed", "run.blocked", "run.failed", "run.resume.exhausted"].includes(event.event_type)) {
+            refreshReplayReport();
+          }
         }
         if (event.event_type === "user.prompt.accepted") {
           currentRunId = event.payload.run_id;
+          resetReplay();
         }
         updateTaskFromEvent(event);
         updateToolFromEvent(event);
+        updateApprovalFromEvent(event);
       }
 
       async function createSession() {
-        const response = await fetch("/api/sessions", { method: "POST" });
+        const response = await fetch("/api/sessions", {
+          method: "POST",
+          headers: userHeaders(),
+        });
         const data = await response.json();
         sessionId = data.session_id;
-        sessionLabel.textContent = sessionId;
-        sessionLabel.title = sessionId;
+        sessionLabel.textContent = `${data.user_id || currentUserId()} / ${sessionId}`;
+        sessionLabel.title = sessionLabel.textContent;
         connectEvents();
       }
 
       function connectEvents() {
+        if (eventStream) {
+          eventStream.close();
+        }
         const stream = new EventSource(
-          `/api/sessions/${sessionId}/events?after_event_id=${latestEventId}`,
+          `/api/sessions/${sessionId}/events?after_event_id=${latestEventId}&user_id=${encodeURIComponent(currentUserId())}`,
         );
+        eventStream = stream;
         stream.onmessage = (message) => addEvent(JSON.parse(message.data));
         [
           "session.created",
@@ -730,6 +1086,10 @@
           "tool.started",
           "tool.call.requested",
           "tool.call.failed",
+          "approval.requested",
+          "approval.approved",
+          "approval.denied",
+          "approval.expired",
           "tool.execution",
           "run.completed",
           "run.blocked",
@@ -750,7 +1110,7 @@
             : `${Date.now()}-${Math.random()}`;
         const response = await fetch(`/api/sessions/${sessionId}/runs`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: userHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify({
             prompt: promptInput.value,
             idempotency_key: idempotencyKey,
@@ -771,6 +1131,7 @@
         wakeButton.disabled = true;
         const response = await fetch(`/api/runs/${currentRunId}/wake`, {
           method: "POST",
+          headers: userHeaders(),
         });
         const data = await response.json();
         const wakeText = response.ok ? `Waking ${data.run_id}` : data.detail;
@@ -778,6 +1139,14 @@
         runStatus.title = wakeText;
         wakeButton.hidden = response.ok;
         wakeButton.disabled = false;
+      });
+
+      replayRefresh.addEventListener("click", refreshReplayReport);
+      switchUserButton.addEventListener("click", () => {
+        resetSessionState();
+        createSession().catch((error) => {
+          sessionLabel.textContent = error.message;
+        });
       });
 
       createSession().catch((error) => {

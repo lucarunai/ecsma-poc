@@ -6,15 +6,23 @@ from typing import Any
 import httpx
 
 from .domain import PlannedTask, RunRecord, SessionEvent, TaskAttemptRecord, TaskRecord
+from .ownership import DEFAULT_USER_ID, normalize_user_id
 
 
 class SessionLayerClient:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def create_session(self) -> str:
+    @staticmethod
+    def _user_headers(user_id: str | None) -> dict[str, str]:
+        return {"X-User-Id": normalize_user_id(user_id or DEFAULT_USER_ID)}
+
+    async def create_session(self, *, user_id: str | None = None) -> str:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
-            response = await client.post("/api/sessions")
+            response = await client.post(
+                "/api/sessions",
+                headers=self._user_headers(user_id),
+            )
             response.raise_for_status()
             return str(response.json()["session_id"])
 
@@ -24,6 +32,7 @@ class SessionLayerClient:
         prompt: str,
         *,
         idempotency_key: str | None = None,
+        user_id: str | None = None,
     ) -> str:
         payload: dict[str, Any] = {"prompt": prompt}
         if idempotency_key:
@@ -32,21 +41,38 @@ class SessionLayerClient:
             response = await client.post(
                 f"/api/sessions/{session_id}/runs",
                 json=payload,
+                headers=self._user_headers(user_id),
             )
             response.raise_for_status()
             return str(response.json()["run_id"])
 
-    async def get_run(self, run_id: str) -> dict[str, Any] | None:
+    async def get_run(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
-            response = await client.get(f"/api/runs/{run_id}")
+            response = await client.get(
+                f"/api/runs/{run_id}",
+                headers=self._user_headers(user_id),
+            )
             if response.status_code == 404:
                 return None
             response.raise_for_status()
             return response.json()
 
-    async def wake_run(self, run_id: str) -> dict[str, Any]:
+    async def wake_run(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
-            response = await client.post(f"/api/runs/{run_id}/wake")
+            response = await client.post(
+                f"/api/runs/{run_id}/wake",
+                headers=self._user_headers(user_id),
+            )
             response.raise_for_status()
             return response.json()
 
@@ -258,6 +284,75 @@ class SessionLayerClient:
             )
             response.raise_for_status()
 
+    async def create_approval_request(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        task_attempt_id: str | None,
+        tool_call_id: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        reason: str,
+        requested_by: str | None = None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                "/internal/approval-requests",
+                json={
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "task_attempt_id": task_attempt_id,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "reason": reason,
+                    "requested_by": requested_by,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def get_approval_request(self, approval_id: str) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(f"/internal/approval-requests/{approval_id}")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def expire_approval_request(self, approval_id: str) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                f"/internal/approval-requests/{approval_id}/expire"
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def decide_approval_request(
+        self,
+        approval_id: str,
+        *,
+        decision: str,
+        decided_by: str | None = "web-ui",
+        decision_reason: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                f"/api/approvals/{approval_id}/decision",
+                json={
+                    "decision": decision,
+                    "decided_by": decided_by,
+                    "decision_reason": decision_reason,
+                },
+                headers=self._user_headers(user_id),
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def append_event(
         self,
         *,
@@ -266,6 +361,9 @@ class SessionLayerClient:
         payload: dict[str, Any],
         run_id: str | None = None,
         task_id: str | None = None,
+        schema_version: str | None = None,
+        actor_type: str = "system",
+        actor_id: str | None = None,
     ) -> SessionEvent:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.post(
@@ -276,6 +374,9 @@ class SessionLayerClient:
                     "task_id": task_id,
                     "event_type": event_type,
                     "payload": payload,
+                    "schema_version": schema_version,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
                 },
             )
             response.raise_for_status()
@@ -367,6 +468,22 @@ class SessionLayerClient:
     async def get_run_recovery_bundle(self, run_id: str) -> dict[str, Any] | None:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.get(f"/internal/runs/{run_id}/recovery-bundle")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def get_run_replay_report(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get(
+                f"/internal/runs/{run_id}/replay",
+                headers=self._user_headers(user_id),
+            )
             if response.status_code == 404:
                 return None
             response.raise_for_status()

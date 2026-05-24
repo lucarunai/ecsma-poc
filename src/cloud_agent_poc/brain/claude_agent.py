@@ -59,6 +59,7 @@ class ClaudeCodingAgent:
         prompt: str,
         task: TaskRecord,
         task_attempt_id: str,
+        workspace: Workspace | None = None,
         handoffs: list[dict[str, Any]] | None = None,
         run_acceptance_criteria: list[dict[str, Any]] | None = None,
         recovery_context: str | None = None,
@@ -85,7 +86,12 @@ class ClaudeCodingAgent:
             allowed_tools=self.CODING_MCP_TOOLS,
             disallowed_tools=self.DENIED_TASK_TOOLS,
             mcp_servers={
-                "coding": self.tool_servers.create(task, task_attempt_id, emit)
+                "coding": self.tool_servers.create(
+                    task,
+                    task_attempt_id,
+                    emit,
+                    workspace,
+                )
             },
             strict_mcp_config=True,
             include_partial_messages=False,

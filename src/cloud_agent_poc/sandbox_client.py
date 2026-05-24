@@ -17,12 +17,27 @@ class SandboxLayerClient:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    async def create_workspace(self, run_id: str) -> Workspace:
-        payload = await self._request("POST", f"/internal/workspaces/{run_id}")
+    async def create_workspace(
+        self,
+        run_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> Workspace:
+        payload = await self._request(
+            "POST",
+            f"/internal/workspaces/{run_id}",
+            json={"user_id": user_id} if user_id else None,
+        )
         return Workspace(path=str(payload["path"]))
 
-    async def delete_workspace(self, run_id: str) -> dict[str, Any]:
-        return await self._request("DELETE", f"/internal/workspaces/{run_id}")
+    async def delete_workspace(
+        self,
+        run_id: str,
+        *,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any]:
+        params = f"?workspace_path={workspace_path}" if workspace_path else ""
+        return await self._request("DELETE", f"/internal/workspaces/{run_id}{params}")
 
     async def read_file(self, run_id: str, path: str) -> dict[str, Any]:
         return await self._execute_tool_data(
@@ -161,6 +176,7 @@ class SandboxLayerClient:
         args: dict[str, Any],
         *,
         tool_call_id: str | None = None,
+        workspace_path: str | None = None,
     ) -> ToolExecutionEnvelope:
         payload = await self._request(
             "POST",
@@ -170,6 +186,7 @@ class SandboxLayerClient:
                 "tool_call_id": tool_call_id or f"toolcall_{uuid4().hex}",
                 "tool_name": tool_name,
                 "args": args,
+                "workspace_path": workspace_path,
             },
         )
         envelope = ToolExecutionEnvelope.model_validate(payload)

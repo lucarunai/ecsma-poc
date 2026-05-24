@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..domain import TaskRecord
+from ..domain import TaskRecord, Workspace
 from ..github_broker_client import GitHubBrokerClient, GitHubBrokerError
 from ..sandbox_client import SandboxLayerClient, SandboxLayerError
 from ..sandbox_protocol import ToolExecutionEnvelope
 from ..session_client import SessionLayerClient
-from ..tool_policy import TRUSTED_GITHUB_TOOLS
+from ..tool_policy import (
+    TRUSTED_GITHUB_TOOLS,
+    approval_reason_for_tool,
+    requires_human_approval,
+)
 
 EmitToolEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -19,16 +24,22 @@ class CodingToolServerFactory:
         sandbox: SandboxLayerClient,
         github_broker: GitHubBrokerClient,
         store: SessionLayerClient,
+        *,
+        approval_poll_seconds: float = 1.0,
+        approval_timeout_seconds: float = 900.0,
     ) -> None:
         self.sandbox = sandbox
         self.github_broker = github_broker
         self.store = store
+        self.approval_poll_seconds = approval_poll_seconds
+        self.approval_timeout_seconds = approval_timeout_seconds
 
     def create(
         self,
         task: TaskRecord,
         task_attempt_id: str,
         emit: EmitToolEvent,
+        workspace: Workspace | None = None,
     ) -> Any:
         try:
             from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -38,6 +49,7 @@ class CodingToolServerFactory:
             ) from exc
 
         run_id = task.run_id
+        workspace_path = workspace.path if workspace else None
 
         @tool(
             "read_workspace_file",
@@ -54,6 +66,7 @@ class CodingToolServerFactory:
                         "read_workspace_file",
                         {"path": args["path"]},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(f"Read {args['path']}.", payload)
@@ -79,6 +92,7 @@ class CodingToolServerFactory:
                             "content": args["content"],
                         },
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -104,6 +118,7 @@ class CodingToolServerFactory:
                             "new_text": args["new_text"],
                         },
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -125,6 +140,7 @@ class CodingToolServerFactory:
                         "glob_workspace_files",
                         {"pattern": args["pattern"]},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result("Workspace glob completed.", payload)
@@ -149,6 +165,7 @@ class CodingToolServerFactory:
                             "glob": args["glob"],
                         },
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result("Workspace grep completed.", payload)
@@ -174,6 +191,7 @@ class CodingToolServerFactory:
                             "source_branch": args["source_branch"],
                         },
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(
@@ -203,6 +221,7 @@ class CodingToolServerFactory:
                         "checkout_git_branch",
                         {"branch_name": args["branch_name"]},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(
@@ -227,6 +246,7 @@ class CodingToolServerFactory:
                         "create_git_branch",
                         {"branch_name": args["branch_name"]},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(
@@ -247,6 +267,7 @@ class CodingToolServerFactory:
                         "git_status",
                         {},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
@@ -264,6 +285,7 @@ class CodingToolServerFactory:
                         "git_diff_stat",
                         {},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
@@ -285,6 +307,7 @@ class CodingToolServerFactory:
                     "run_python_unittest",
                     {"start_directory": args["start_directory"]},
                     task_attempt_id=task_attempt_id,
+                    workspace_path=workspace_path,
                     allow_tool_error=True,
                 )
                 payload = self._data(envelope)
@@ -314,6 +337,7 @@ class CodingToolServerFactory:
                         "commit_git_changes",
                         {"commit_message": args["commit_message"]},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result("Git commit created.", {"output": payload["summary"]})
@@ -335,6 +359,7 @@ class CodingToolServerFactory:
                         "push_current_git_branch",
                         {},
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result("Git branch pushed.", {"output": payload["summary"]})
@@ -360,6 +385,7 @@ class CodingToolServerFactory:
                             "body": args["body"],
                         },
                         task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
                     )
                 )
                 return self._result(
@@ -399,6 +425,7 @@ class CodingToolServerFactory:
         args: dict[str, Any],
         *,
         task_attempt_id: str,
+        workspace_path: str | None = None,
         allow_tool_error: bool = False,
     ) -> ToolExecutionEnvelope:
         tool_call_id = await self.store.create_tool_call(
@@ -418,12 +445,55 @@ class CodingToolServerFactory:
                 "input": args,
             },
         )
+        if requires_human_approval(tool_name):
+            approval: dict[str, Any] | None = None
+            try:
+                approval = await self.store.create_approval_request(
+                    run_id=run_id,
+                    task_id=task.id,
+                    task_attempt_id=task_attempt_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    tool_input=args,
+                    reason=approval_reason_for_tool(tool_name),
+                    requested_by="agent",
+                )
+                await emit(
+                    "approval.requested",
+                    self._approval_event_payload(approval),
+                )
+                await self._await_approval(approval["id"], emit)
+            except SandboxLayerError:
+                approval_state = (
+                    await self.store.get_approval_request(approval["id"])
+                    if approval
+                    else None
+                )
+                failure_kind = self._approval_failure_kind(approval_state)
+                await self.store.update_tool_call(
+                    tool_call_id,
+                    "failed",
+                    failure_kind=failure_kind,
+                    ended=True,
+                )
+                await emit(
+                    "tool.call.failed",
+                    {
+                        "task_id": task.id,
+                        "task_attempt_id": task_attempt_id,
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "failure_kind": failure_kind,
+                    },
+                )
+                raise
         try:
             envelope = await self._execute_runtime_tool(
                 run_id=run_id,
                 tool_name=tool_name,
                 args=args,
                 tool_call_id=tool_call_id,
+                workspace_path=workspace_path,
             )
         except (SandboxLayerError, GitHubBrokerError):
             await self.store.update_tool_call(
@@ -485,6 +555,67 @@ class CodingToolServerFactory:
             raise SandboxLayerError(envelope.tool_result.summary)
         return envelope
 
+    async def _await_approval(
+        self,
+        approval_id: str,
+        emit: EmitToolEvent,
+    ) -> dict[str, Any]:
+        deadline = asyncio.get_running_loop().time() + self.approval_timeout_seconds
+        while True:
+            approval = await self.store.get_approval_request(approval_id)
+            if approval is None:
+                raise SandboxLayerError(
+                    f"Human approval request {approval_id} was not found."
+                )
+            if approval["status"] == "approved":
+                return approval
+            if approval["status"] == "denied":
+                raise SandboxLayerError(
+                    f"Human approval denied for {approval['tool_name']}."
+                )
+            if approval["status"] == "expired":
+                raise SandboxLayerError(
+                    f"Human approval expired for {approval['tool_name']}."
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                expired = await self.store.expire_approval_request(approval_id)
+                if expired:
+                    await emit(
+                        "approval.expired",
+                        self._approval_event_payload(expired),
+                    )
+                raise SandboxLayerError(
+                    f"Human approval timed out for {approval['tool_name']}."
+                )
+            await asyncio.sleep(self.approval_poll_seconds)
+
+    @staticmethod
+    def _approval_event_payload(approval: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "approval_id": approval["id"],
+            "run_id": approval["run_id"],
+            "task_id": approval["task_id"],
+            "task_attempt_id": approval["task_attempt_id"],
+            "tool_call_id": approval["tool_call_id"],
+            "tool_name": approval["tool_name"],
+            "tool_input": approval["tool_input"],
+            "reason": approval["reason"],
+            "status": approval["status"],
+            "requested_by": approval["requested_by"],
+            "decided_by": approval["decided_by"],
+            "decision_reason": approval["decision_reason"],
+        }
+
+    @staticmethod
+    def _approval_failure_kind(approval: dict[str, Any] | None) -> str:
+        if not approval:
+            return "human_approval_required"
+        if approval.get("status") == "denied":
+            return "human_denied"
+        if approval.get("status") == "expired":
+            return "approval_timeout"
+        return "human_approval_required"
+
     async def _execute_runtime_tool(
         self,
         *,
@@ -492,6 +623,7 @@ class CodingToolServerFactory:
         tool_name: str,
         args: dict[str, Any],
         tool_call_id: str,
+        workspace_path: str | None = None,
     ) -> ToolExecutionEnvelope:
         if tool_name in TRUSTED_GITHUB_TOOLS:
             return await self.github_broker.execute_tool(
@@ -499,12 +631,14 @@ class CodingToolServerFactory:
                 tool_name,
                 args,
                 tool_call_id=tool_call_id,
+                workspace_path=workspace_path,
             )
         return await self.sandbox.execute_tool(
             run_id,
             tool_name,
             args,
             tool_call_id=tool_call_id,
+            workspace_path=workspace_path,
         )
 
     @staticmethod

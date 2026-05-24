@@ -33,7 +33,7 @@ async def healthz() -> dict[str, str]:
 async def execute_tool(request: ToolExecutionRequest) -> ToolExecutionEnvelope:
     if request.tool_name not in TRUSTED_GITHUB_TOOLS:
         raise HTTPException(status_code=404, detail="Trusted GitHub tool is not supported.")
-    workspace_path = _workspace_root(request.run_id)
+    workspace_path = _workspace_path_from_request(request)
     started = time.monotonic()
     try:
         tool_result = await _dispatch(request, workspace_path=workspace_path)
@@ -149,6 +149,18 @@ def _workspace_root(run_id: str) -> Path:
     if base_root not in workspace_root.parents:
         raise HTTPException(status_code=400, detail="Workspace escaped broker root.")
     return workspace_root
+
+
+def _workspace_path_from_request(request: ToolExecutionRequest) -> Path:
+    if request.workspace_path:
+        workspace_root = Path(request.workspace_path).resolve()
+        base_root = settings.workspace_root.resolve()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise HTTPException(status_code=404, detail="GitHub broker workspace was not found.")
+        if base_root not in workspace_root.parents:
+            raise HTTPException(status_code=400, detail="Workspace escaped broker root.")
+        return workspace_root
+    return _workspace_root(request.run_id)
 
 
 def _validate_run_id(run_id: str) -> None:

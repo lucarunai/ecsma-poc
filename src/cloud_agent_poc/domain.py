@@ -52,6 +52,7 @@ class RunRecord:
     session_id: str
     prompt: str
     status: str
+    user_id: str = "demo-user"
     acceptance_criteria: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -64,6 +65,14 @@ class SessionEvent:
     event_type: str
     payload: dict[str, Any]
     created_at: datetime
+    user_id: str = "demo-user"
+    seq: int | None = None
+    schema_version: str | None = None
+    actor_type: str | None = None
+    actor_id: str | None = None
+    payload_hash: str | None = None
+    previous_event_hash: str | None = None
+    event_hash: str | None = None
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain import AgentTaskResult, SessionEvent, TaskRecord, Workspace
+from ..session_contracts import (
+    RECOVERY_CONTEXT_SCHEMA,
+    RUN_ACCEPTANCE_CRITERIA_SCHEMA,
+    TASK_HANDOFF_SCHEMA,
+)
 from ..session_policy import FAILURE_KIND_MODEL_ERROR
 from .claude_agent import ClaudeCodingAgent
 from .planner import AgentTaskPlanner
@@ -165,7 +171,11 @@ class RunOrchestrator:
                     event_type="run.resume.completed",
                     payload={"run_id": run_id},
                 )
-            await self._cleanup_workspace(session_id=session_id, run_id=run_id)
+            await self._cleanup_workspace(
+                session_id=session_id,
+                run_id=run_id,
+                workspace=workspace,
+            )
         except Exception as exc:
             await self.store.update_run(
                 run_id,
@@ -217,16 +227,19 @@ class RunOrchestrator:
             )
 
         try:
-            result = await self.agent.implement(
-                prompt=prompt,
-                task=task,
-                task_attempt_id=attempt.id,
-                handoffs=handoffs,
-                run_acceptance_criteria=run_acceptance_criteria,
-                recovery_context=recovery_context,
-                emit=emit,
-                record_claude_session=record_claude_session,
-            )
+            implementation_kwargs = {
+                "prompt": prompt,
+                "task": task,
+                "task_attempt_id": attempt.id,
+                "handoffs": handoffs,
+                "run_acceptance_criteria": run_acceptance_criteria,
+                "recovery_context": recovery_context,
+                "emit": emit,
+                "record_claude_session": record_claude_session,
+            }
+            if "workspace" in inspect.signature(self.agent.implement).parameters:
+                implementation_kwargs["workspace"] = workspace
+            result = await self.agent.implement(**implementation_kwargs)
         except Exception as exc:
             await self.store.update_task_attempt(
                 attempt.id,
@@ -304,17 +317,33 @@ class RunOrchestrator:
         workspace_path = metadata.get("workspace_path")
         if workspace_path:
             return Workspace(path=str(workspace_path))
-        workspace = await self.sandbox.create_workspace(run_id)
+        user_id = (recovery_bundle or {}).get("run", {}).get("user_id")
+        if "user_id" in inspect.signature(self.sandbox.create_workspace).parameters:
+            workspace = await self.sandbox.create_workspace(run_id, user_id=user_id)
+        else:
+            workspace = await self.sandbox.create_workspace(run_id)
         await self.store.update_run(
             run_id,
             "running",
-            metadata={"workspace_path": workspace.path},
+            metadata={"workspace_path": workspace.path, "user_id": user_id},
         )
         return workspace
 
-    async def _cleanup_workspace(self, *, session_id: str, run_id: str) -> None:
+    async def _cleanup_workspace(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        workspace: Workspace,
+    ) -> None:
         try:
-            result = await self.sandbox.delete_workspace(run_id)
+            if "workspace_path" in inspect.signature(self.sandbox.delete_workspace).parameters:
+                result = await self.sandbox.delete_workspace(
+                    run_id,
+                    workspace_path=workspace.path,
+                )
+            else:
+                result = await self.sandbox.delete_workspace(run_id)
         except Exception as exc:
             await self._emit(
                 session_id=session_id,
@@ -379,6 +408,7 @@ class RunOrchestrator:
         return [
             {
                 "task_id": task.id,
+                "schema_version": RUN_ACCEPTANCE_CRITERIA_SCHEMA,
                 "task_seq": task.seq,
                 "title": task.title,
                 "description": task.description,
@@ -395,7 +425,7 @@ class RunOrchestrator:
         prior_handoffs: list[dict[str, Any]],
     ) -> dict[str, Any]:
         return {
-            "schema_version": "task_handoff.v1",
+            "schema_version": TASK_HANDOFF_SCHEMA,
             "run_id": task.run_id,
             "from_task": {
                 "id": task.id,
@@ -531,7 +561,7 @@ class RunOrchestrator:
             if attempt.get("task_id") == task.id
         ][:3]
         context = {
-            "schema_version": "recovery_context.v1",
+            "schema_version": RECOVERY_CONTEXT_SCHEMA,
             "reason": (
                 "resume_queued task is being retried from durable workspace state"
             ),

@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT 'demo-user',
     title TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
@@ -7,6 +8,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'demo-user';
 
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS expires_at
@@ -18,6 +22,7 @@ ALTER TABLE sessions
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL DEFAULT 'demo-user',
     prompt TEXT NOT NULL,
     status TEXT NOT NULL,
     idempotency_key TEXT,
@@ -35,6 +40,9 @@ CREATE TABLE IF NOT EXISTS runs (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE runs
+    ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'demo-user';
 
 ALTER TABLE runs
     ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
@@ -88,10 +96,42 @@ CREATE TABLE IF NOT EXISTS session_events (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    user_id TEXT NOT NULL DEFAULT 'demo-user',
     event_type TEXT NOT NULL,
+    seq INTEGER,
+    schema_version TEXT NOT NULL DEFAULT 'session_event.v1',
+    actor_type TEXT NOT NULL DEFAULT 'system',
+    actor_id TEXT,
     payload JSONB NOT NULL,
+    payload_hash TEXT,
+    previous_event_hash TEXT,
+    event_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'demo-user';
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS seq INTEGER;
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS schema_version TEXT NOT NULL DEFAULT 'session_event.v1';
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS actor_type TEXT NOT NULL DEFAULT 'system';
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS actor_id TEXT;
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS previous_event_hash TEXT;
+
+ALTER TABLE session_events
+    ADD COLUMN IF NOT EXISTS event_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS agent_transcripts (
     id TEXT PRIMARY KEY,
@@ -145,8 +185,81 @@ ALTER TABLE task_attempts
 ALTER TABLE task_attempts
     ADD COLUMN IF NOT EXISTS heartbeat_expires_at TIMESTAMPTZ;
 
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    tool_name TEXT NOT NULL,
+    input JSONB NOT NULL,
+    status TEXT NOT NULL,
+    latest_execution_id TEXT,
+    failure_kind TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL DEFAULT 'demo-user',
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    tool_call_id TEXT REFERENCES tool_calls(id) ON DELETE SET NULL,
+    tool_name TEXT NOT NULL,
+    tool_input JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_by TEXT,
+    decided_by TEXT,
+    decision_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decided_at TIMESTAMPTZ
+);
+
+ALTER TABLE approval_requests
+    ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'demo-user';
+
+CREATE TABLE IF NOT EXISTS tool_executions (
+    execution_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    execution_status TEXT NOT NULL,
+    failure_kind TEXT,
+    envelope JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE tool_executions
+    ADD COLUMN IF NOT EXISTS task_attempt_id TEXT
+    REFERENCES task_attempts(id) ON DELETE SET NULL;
+
+ALTER TABLE tool_executions
+    ADD COLUMN IF NOT EXISTS failure_kind TEXT;
+
 CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
     ON session_events (session_id, id);
+
+CREATE INDEX IF NOT EXISTS sessions_user_id_created_at_idx
+    ON sessions (user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS runs_user_id_status_created_at_idx
+    ON runs (user_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS session_events_user_id_session_id_id_idx
+    ON session_events (user_id, session_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS session_events_run_id_seq_idx
+    ON session_events (run_id, seq)
+    WHERE run_id IS NOT NULL AND seq IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS session_events_session_scope_seq_idx
+    ON session_events (session_id, seq)
+    WHERE run_id IS NULL AND seq IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS tasks_run_id_seq_idx
     ON tasks (run_id, seq);
@@ -177,3 +290,24 @@ CREATE INDEX IF NOT EXISTS task_attempts_run_id_created_at_idx
 CREATE INDEX IF NOT EXISTS task_attempts_heartbeat_expires_at_idx
     ON task_attempts (heartbeat_expires_at)
     WHERE status = 'running';
+
+CREATE INDEX IF NOT EXISTS tool_calls_task_id_created_at_idx
+    ON tool_calls (task_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_calls_run_id_created_at_idx
+    ON tool_calls (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS approval_requests_run_id_created_at_idx
+    ON approval_requests (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS approval_requests_status_created_at_idx
+    ON approval_requests (status, created_at);
+
+CREATE INDEX IF NOT EXISTS approval_requests_user_id_status_created_at_idx
+    ON approval_requests (user_id, status, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_executions_task_id_created_at_idx
+    ON tool_executions (task_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_executions_run_id_created_at_idx
+    ON tool_executions (run_id, created_at);

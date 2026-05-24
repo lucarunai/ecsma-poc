@@ -6,17 +6,23 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .ownership import DEFAULT_USER_ID, normalize_user_id
 from .session_client import SessionLayerClient
 
 
 class RunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
     idempotency_key: str | None = Field(default=None, max_length=128)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str
+    decision_reason: str | None = None
 
 
 settings = Settings.from_env()
@@ -43,21 +49,27 @@ async def healthz() -> dict[str, str]:
 
 
 @app.post("/api/sessions")
-async def create_session() -> dict[str, str]:
-    session_id = await session_layer.create_session()
-    return {"session_id": session_id}
+async def create_session(
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, str]:
+    user_id = normalize_user_id(user_id)
+    session_id = await session_layer.create_session(user_id=user_id)
+    return {"session_id": session_id, "user_id": user_id}
 
 
 @app.post("/api/sessions/{session_id}/runs")
 async def create_run(
     session_id: str,
     body: RunCreateRequest,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
 ) -> dict[str, str]:
+    user_id = normalize_user_id(user_id)
     try:
         run_id = await session_layer.create_run(
             session_id,
             body.prompt,
             idempotency_key=body.idempotency_key,
+            user_id=user_id,
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
@@ -67,17 +79,37 @@ async def create_run(
 
 
 @app.get("/api/runs/{run_id}")
-async def get_run(run_id: str) -> dict:
-    run = await session_layer.get_run(run_id)
+async def get_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict:
+    run = await session_layer.get_run(run_id, user_id=normalize_user_id(user_id))
     if run is None:
         raise HTTPException(status_code=404, detail="Run was not found.")
     return run
 
 
+@app.get("/api/runs/{run_id}/replay")
+async def replay_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict:
+    report = await session_layer.get_run_replay_report(
+        run_id,
+        user_id=normalize_user_id(user_id),
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
+    return report
+
+
 @app.post("/api/runs/{run_id}/wake")
-async def wake_run(run_id: str) -> dict:
+async def wake_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict:
     try:
-        return await session_layer.wake_run(run_id)
+        return await session_layer.wake_run(run_id, user_id=normalize_user_id(user_id))
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in {404, 409}:
             raise HTTPException(
@@ -87,15 +119,38 @@ async def wake_run(run_id: str) -> dict:
         raise
 
 
+@app.post("/api/approvals/{approval_id}/decision")
+async def decide_approval(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict:
+    try:
+        return await session_layer.decide_approval_request(
+            approval_id,
+            decision=body.decision,
+            decided_by="web-ui",
+            decision_reason=body.decision_reason,
+            user_id=normalize_user_id(user_id),
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {404, 422}:
+            detail = exc.response.json().get("detail", "Approval decision failed.")
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+        raise
+
+
 @app.get("/api/sessions/{session_id}/events")
 async def session_events(
     session_id: str,
     after_event_id: int = Query(default=0, ge=0),
+    user_id: str = Query(default=DEFAULT_USER_ID),
 ) -> StreamingResponse:
+    user_id = normalize_user_id(user_id)
     async def stream() -> AsyncIterator[str]:
         url = (
             f"{settings.session_layer_url}/api/sessions/{session_id}/events"
-            f"?after_event_id={after_event_id}"
+            f"?after_event_id={after_event_id}&user_id={user_id}"
         )
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("GET", url) as response:

@@ -4,12 +4,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .session_contracts import TOOL_EXECUTION_ENVELOPE_SCHEMA
+
 
 class ToolExecutionRequest(BaseModel):
     run_id: str
     tool_call_id: str
     tool_name: str
     args: dict[str, Any] = Field(default_factory=dict)
+    workspace_path: str | None = None
     execution_id: str | None = None
 
 
@@ -28,6 +31,7 @@ class SandboxRuntimeMetadata(BaseModel):
 
 
 class ToolExecutionEnvelope(BaseModel):
+    schema_version: str = TOOL_EXECUTION_ENVELOPE_SCHEMA
     execution_id: str
     run_id: str
     tool_call_id: str

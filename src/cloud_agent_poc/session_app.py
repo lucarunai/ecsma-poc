@@ -5,12 +5,13 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
 from .domain import PlannedTask, SessionEvent
+from .ownership import DEFAULT_USER_ID, normalize_user_id
 from .session_store import PostgresSessionStore
 
 
@@ -87,12 +88,32 @@ class ToolCallUpdateRequest(BaseModel):
     ended: bool = False
 
 
+class ApprovalCreateRequest(BaseModel):
+    run_id: str
+    task_id: str
+    task_attempt_id: str | None = None
+    tool_call_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    reason: str
+    requested_by: str | None = Field(default=None, max_length=200)
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str
+    decided_by: str | None = Field(default="web-ui", max_length=200)
+    decision_reason: str | None = None
+
+
 class EventCreateRequest(BaseModel):
     session_id: str
     run_id: str | None = None
     task_id: str | None = None
     event_type: str
     payload: dict[str, Any]
+    schema_version: str | None = None
+    actor_type: str = Field(default="system", max_length=80)
+    actor_id: str | None = Field(default=None, max_length=200)
 
 
 class AgentTranscriptCreateRequest(BaseModel):
@@ -136,9 +157,17 @@ def event_to_dict(event: SessionEvent) -> dict[str, Any]:
         "session_id": event.session_id,
         "run_id": event.run_id,
         "task_id": event.task_id,
+        "user_id": event.user_id,
         "event_type": event.event_type,
         "payload": event.payload,
         "created_at": event.created_at.isoformat(),
+        "seq": event.seq,
+        "schema_version": event.schema_version,
+        "actor_type": event.actor_type,
+        "actor_id": event.actor_id,
+        "payload_hash": event.payload_hash,
+        "previous_event_hash": event.previous_event_hash,
+        "event_hash": event.event_hash,
     }
 
 
@@ -164,32 +193,40 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Cloud Agent PoC Session Layer", lifespan=lifespan)
 
 
+def _user_id_from_header(x_user_id: str | None = Header(default=None)) -> str:
+    return normalize_user_id(x_user_id or DEFAULT_USER_ID)
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok", "role": "session"}
 
 
 @app.post("/api/sessions")
-async def create_session() -> dict[str, str]:
-    session_id = await store.create_session()
+async def create_session(user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id")) -> dict[str, str]:
+    user_id = normalize_user_id(user_id)
+    session_id = await store.create_session(user_id=user_id)
     await store.append_event(
         session_id=session_id,
         event_type="session.created",
-        payload={"session_id": session_id},
+        payload={"session_id": session_id, "user_id": user_id},
     )
-    return {"session_id": session_id}
+    return {"session_id": session_id, "user_id": user_id}
 
 
 @app.post("/api/sessions/{session_id}/runs")
 async def create_run(
     session_id: str,
     body: RunCreateRequest,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
 ) -> dict[str, str]:
+    user_id = normalize_user_id(user_id)
     try:
         run_id = await store.create_run(
             session_id,
             body.prompt,
             idempotency_key=body.idempotency_key,
+            user_id=user_id,
         )
     except Exception as exc:
         raise HTTPException(status_code=404, detail="Session was not found.") from exc
@@ -197,22 +234,28 @@ async def create_run(
         session_id=session_id,
         run_id=run_id,
         event_type="user.prompt.accepted",
-        payload={"prompt": body.prompt, "run_id": run_id},
+        payload={"prompt": body.prompt, "run_id": run_id, "user_id": user_id},
     )
     return {"session_id": session_id, "run_id": run_id, "status": "queued"}
 
 
 @app.get("/api/runs/{run_id}")
-async def get_run(run_id: str) -> dict:
-    run = await store.get_run(run_id)
+async def get_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict:
+    run = await store.get_run(run_id, user_id=normalize_user_id(user_id))
     if run is None:
         raise HTTPException(status_code=404, detail="Run was not found.")
     return run
 
 
 @app.post("/api/runs/{run_id}/wake")
-async def wake_run(run_id: str) -> dict[str, str]:
-    run = await store.wake_run(run_id)
+async def wake_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, str]:
+    run = await store.wake_run(run_id, user_id=normalize_user_id(user_id))
     if run is None:
         raise HTTPException(
             status_code=409,
@@ -237,12 +280,19 @@ async def wake_run(run_id: str) -> dict[str, str]:
 async def session_events(
     session_id: str,
     after_event_id: int = Query(default=0, ge=0),
+    user_id: str = Query(default=DEFAULT_USER_ID),
 ) -> StreamingResponse:
+    user_id = normalize_user_id(user_id)
+
     async def stream() -> AsyncIterator[str]:
         latest_event_id = after_event_id
         seconds_without_events = 0
         while True:
-            events = await store.list_events(session_id, latest_event_id)
+            events = await store.list_events(
+                session_id,
+                latest_event_id,
+                user_id=user_id,
+            )
             if events:
                 seconds_without_events = 0
                 for event in events:
@@ -267,9 +317,22 @@ async def claim_next_queued_run(body: RunClaimRequest | None = None):
     )
     if run is None:
         return Response(status_code=204)
+    await store.append_event(
+        session_id=run.session_id,
+        run_id=run.id,
+        event_type="run.claimed",
+        payload={
+            "run_id": run.id,
+            "worker_id": body.worker_id,
+            "lease_seconds": body.lease_seconds,
+        },
+        actor_type="brain_worker",
+        actor_id=body.worker_id,
+    )
     return {
         "id": run.id,
         "session_id": run.session_id,
+        "user_id": run.user_id,
         "prompt": run.prompt,
         "status": run.status,
     }
@@ -293,6 +356,37 @@ async def requeue_expired_run_leases() -> dict[str, Any]:
                 ),
             },
         )
+        for tool_call in run.get("orphaned_tool_calls", []):
+            await store.append_event(
+                session_id=run["session_id"],
+                run_id=run["id"],
+                task_id=tool_call.get("task_id"),
+                event_type="tool.call.orphaned",
+                payload={
+                    "task_id": tool_call.get("task_id"),
+                    "tool_call_id": tool_call.get("id"),
+                    "tool_name": tool_call.get("tool_name"),
+                    "failure_kind": tool_call.get("failure_kind"),
+                    "reason": "run_lease_expired",
+                },
+            )
+        for approval in run.get("expired_approvals", []):
+            await store.append_event(
+                session_id=run["session_id"],
+                run_id=run["id"],
+                task_id=approval.get("task_id"),
+                event_type="approval.expired",
+                payload={
+                    "approval_id": approval.get("id"),
+                    "run_id": approval.get("run_id"),
+                    "task_id": approval.get("task_id"),
+                    "task_attempt_id": approval.get("task_attempt_id"),
+                    "tool_call_id": approval.get("tool_call_id"),
+                    "tool_name": approval.get("tool_name"),
+                    "status": approval.get("status"),
+                    "decision_reason": approval.get("decision_reason"),
+                },
+            )
         await store.append_event(
             session_id=run["session_id"],
             run_id=run["id"],
@@ -451,6 +545,78 @@ async def update_tool_call(
     return {"status": "ok"}
 
 
+@app.post("/internal/approval-requests")
+async def create_approval_request(body: ApprovalCreateRequest) -> dict[str, Any]:
+    return await store.create_approval_request(
+        run_id=body.run_id,
+        task_id=body.task_id,
+        task_attempt_id=body.task_attempt_id,
+        tool_call_id=body.tool_call_id,
+        tool_name=body.tool_name,
+        tool_input=body.tool_input,
+        reason=body.reason,
+        requested_by=body.requested_by,
+    )
+
+
+@app.get("/internal/approval-requests/{approval_id}")
+async def get_approval_request(approval_id: str) -> dict[str, Any]:
+    approval = await store.get_approval_request(approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval request was not found.")
+    return approval
+
+
+@app.post("/internal/approval-requests/{approval_id}/expire")
+async def expire_approval_request(approval_id: str) -> dict[str, Any]:
+    approval = await store.expire_approval_request(approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval request was not pending.")
+    return approval
+
+
+@app.post("/api/approvals/{approval_id}/decision")
+async def decide_approval_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    if body.decision not in {"approved", "denied"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Approval decision must be approved or denied.",
+        )
+    approval = await store.decide_approval_request(
+        approval_id,
+        decision=body.decision,
+        decided_by=body.decided_by,
+        decision_reason=body.decision_reason,
+        user_id=normalize_user_id(user_id),
+    )
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval request was not found.")
+    await store.append_event(
+        session_id=approval["session_id"],
+        run_id=approval["run_id"],
+        task_id=approval["task_id"],
+        event_type=f"approval.{body.decision}",
+        payload={
+            "approval_id": approval["id"],
+            "run_id": approval["run_id"],
+            "task_id": approval["task_id"],
+            "task_attempt_id": approval["task_attempt_id"],
+            "tool_call_id": approval["tool_call_id"],
+            "tool_name": approval["tool_name"],
+            "status": approval["status"],
+            "decided_by": approval["decided_by"],
+            "decision_reason": approval["decision_reason"],
+        },
+        actor_type="human",
+        actor_id=body.decided_by,
+    )
+    return approval
+
+
 @app.post("/internal/events")
 async def append_event(body: EventCreateRequest) -> dict[str, Any]:
     event = await store.append_event(
@@ -459,8 +625,25 @@ async def append_event(body: EventCreateRequest) -> dict[str, Any]:
         task_id=body.task_id,
         event_type=body.event_type,
         payload=body.payload,
+        schema_version=body.schema_version,
+        actor_type=body.actor_type,
+        actor_id=body.actor_id,
     )
     return event_to_dict(event)
+
+
+@app.get("/internal/runs/{run_id}/replay")
+async def replay_run(
+    run_id: str,
+    user_id: str = Header(default=DEFAULT_USER_ID, alias="X-User-Id"),
+) -> dict[str, Any]:
+    report = await store.get_run_replay_report(
+        run_id,
+        user_id=normalize_user_id(user_id),
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Run was not found.")
+    return report
 
 
 @app.post("/internal/agent-transcripts")
