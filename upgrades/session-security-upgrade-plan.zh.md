@@ -50,6 +50,13 @@
 
 目标：证明 session 状态不在内存里，Pod crash 后可以恢复。
 
+当前实现状态：
+
+- 已增加 run 状态机校验，拒绝 `completed -> running`、`completed -> resume_queued` 等非法跳转。
+- 已增加可选 `idempotency_key`，并通过 `session_id + idempotency_key` 唯一索引避免重复创建 run。
+- 已增加 `sessions.expires_at` 和 `runs.retention_until`，并提供 expired state archive 入口。过期只归档，不做 hard delete，保留 events、handoffs、tool evidence 等审计数据。
+- 已补充更明确的 resume events：`run.resume.requested`、`run.resume.started`、`run.resume.context_loaded`、`run.resume.completed`。
+
 当前已经满足：
 
 - `runs.status` 记录 run 状态，例如 `queued`、`running`、`completed`、`blocked`、`failed`、`resume_queued`。
@@ -93,7 +100,7 @@
 
    并约束同一个 `session_id + idempotency_key` 只能创建一次 run。
 
-3. 增加 session TTL 和 cleanup 策略。
+3. 增加 session TTL 和 archive 策略。
 
    当前 PoC 没有明确过期策略。可以增加：
 
@@ -102,7 +109,7 @@
    runs.retention_until
    ```
 
-   已完成 run 的 workspace、transcript、tool execution envelope 可以按策略清理。
+   已完成 run 和过期 session 可以按策略归档。归档只更新 `archived_at` / `archive_reason`，不删除 `session_events`、`task_handoffs`、`tool_calls`、`tool_executions` 等审计数据。
 
 4. 补充更明确的 recovery events。
 
@@ -120,6 +127,20 @@
 ### 2.2 Median 阶段：生产级恢复能力
 
 目标：解决 Brain Pod 正在执行时突然 crash，系统可以自动恢复，不依赖用户手动 wake。
+
+当前实现状态：
+
+- 已增加 run lease 字段：`claimed_by`、`claim_expires_at`、`last_heartbeat_at`、`attempt_count`。
+- Brain Worker claim run 时会写入 worker id、lease 过期时间、heartbeat 时间，并递增 `attempt_count`。
+- Brain Worker 执行 run 时会启动后台 heartbeat，定期刷新 `last_heartbeat_at` 和 `claim_expires_at`。
+- 同一次 heartbeat 也会刷新当前 `running` 的 `task_attempts.last_heartbeat_at` 和 `task_attempts.heartbeat_expires_at`。
+- Brain Worker 每轮 claim 前会调用 expired lease requeue，把过期的 `running` run 自动转成 `resume_queued`。
+- 自动 requeue 会把未结束的 `running` task attempt 标记为 `failed`，并写入 `failure_kind = brain_crash`。
+- 自动 requeue 会把未完成的 `requested` / `running` tool call 标记为 `orphaned`，并写入 `failure_kind = brain_crash`，下次 agent query 会先验证 workspace 状态再决定是否重试。
+- Agent query 异常会把当前 task attempt 标记为 `failed`，并写入 `failure_kind = model_error`。
+- 恢复时传给 agent 的 `recovery_context` 已升级为 `recovery_context.v1` JSON，包含当前 task、最近 attempts、需要关注的 failed/orphaned/requested/running tool calls 和恢复指导。
+- Brain Worker 每轮 claim 前会执行最大尝试次数保护，超过 `RUN_MAX_ATTEMPTS` 的 `resume_queued` run 会转成 `failed`，并发出 `run.resume.exhausted` 事件，避免无限自动恢复。
+- 自动 requeue 会发出 `run.lease.expired` 和 `run.resume.requested` 事件，前端 timeline 可以展示。
 
 当前主要问题：
 
@@ -178,10 +199,10 @@ resume_queued
 
 Median 阶段还建议：
 
-1. Task attempt 也加 heartbeat。
-   不只 run 级别，`task_attempts` 也可以记录是否卡住。
+1. Task attempt 也加 heartbeat。（已实现）
+   不只 run 级别，`task_attempts` 也记录 `last_heartbeat_at` 和 `heartbeat_expires_at`，用于判断某个 task query 是否卡住。
 
-2. 区分 crash 和业务失败。
+2. 区分 crash 和业务失败。（已完成基础版）
 
    例如：
 
@@ -192,11 +213,11 @@ Median 阶段还建议：
    failure_kind = model_error
    ```
 
-3. 恢复时使用结构化 recovery context。
-   当前已经能从 failed tool calls 拼接恢复上下文。后续可以把它升级为结构化 JSON，而不是纯文本。
+3. 恢复时使用结构化 recovery context。（已实现）
+   当前传给 agent 的恢复信息是 `recovery_context.v1` JSON，而不是自由文本；它包含 `prior_attempts`、`tool_calls_requiring_attention` 和 `resume_guidance`。
 
-4. 支持多个 Brain Worker。
-   当前 `FOR UPDATE SKIP LOCKED` 是一个好的基础。加 lease 后，可以更安全地支持多 worker 并发。
+4. 支持多个 Brain Worker。（已完成基础版）
+   当前 `FOR UPDATE SKIP LOCKED` 加 run lease 可以避免多个 worker 同时 claim 同一个 run；lease 过期后由下一轮 worker 自动 requeue。
 
 ### 2.3 Advanced 阶段：多租户、可审计、强一致的 Agent Session 平台
 

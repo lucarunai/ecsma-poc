@@ -4,7 +4,7 @@ metadata:
   name: cloud-agent-brain
   namespace: cloud-agent-poc-v2
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: cloud-agent-brain
@@ -28,6 +28,12 @@ spec:
             - configMapRef:
                 name: cloud-agent-poc-v2-config
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CLAUDE_CONFIG_DIR
+              value: /root/.claude/brain/$(POD_NAME)
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -46,9 +52,8 @@ spec:
               port: 8000
             periodSeconds: 10
           volumeMounts:
-            - name: session-artifacts
+            - name: claude-config
               mountPath: /root/.claude
       volumes:
-        - name: session-artifacts
-          persistentVolumeClaim:
-            claimName: session-artifacts
+        - name: claude-config
+          emptyDir: {}

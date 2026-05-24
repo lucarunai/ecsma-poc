@@ -709,6 +709,12 @@
           "user.prompt.accepted",
           "run.started",
           "run.resumed",
+          "run.lease.expired",
+          "run.resume.requested",
+          "run.resume.started",
+          "run.resume.context_loaded",
+          "run.resume.completed",
+          "run.resume.exhausted",
           "run.wake.requested",
           "plan.started",
           "tasks.created",
@@ -738,10 +744,17 @@
         runStatus.textContent = "Submitting run...";
         runStatus.title = "Submitting run...";
         resetTasks();
+        const idempotencyKey =
+          globalThis.crypto && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random()}`;
         const response = await fetch(`/api/sessions/${sessionId}/runs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: promptInput.value }),
+          body: JSON.stringify({
+            prompt: promptInput.value,
+            idempotency_key: idempotencyKey,
+          }),
         });
         const data = await response.json();
         const runText = response.ok ? `Queued ${data.run_id}` : data.detail;

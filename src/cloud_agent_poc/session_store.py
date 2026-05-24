@@ -9,6 +9,12 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .domain import PlannedTask, RunRecord, SessionEvent, TaskAttemptRecord, TaskRecord
+from .session_policy import (
+    FAILURE_KIND_BRAIN_CRASH,
+    RUN_LEASE_SECONDS,
+    RUN_MAX_ATTEMPTS,
+    validate_run_status_transition,
+)
 
 
 class PostgresSessionStore:
@@ -31,17 +37,30 @@ class PostgresSessionStore:
             )
         return session_id
 
-    async def create_run(self, session_id: str, prompt: str) -> str:
+    async def create_run(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
         run_id = f"run_{uuid4().hex}"
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
-            await conn.execute(
+            cursor = await conn.execute(
                 """
-                INSERT INTO runs (id, session_id, prompt, status)
-                VALUES (%s, %s, %s, 'queued')
+                INSERT INTO runs (id, session_id, prompt, status, idempotency_key)
+                VALUES (%s, %s, %s, 'queued', %s)
+                ON CONFLICT (session_id, idempotency_key)
+                    WHERE idempotency_key IS NOT NULL
+                DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+                RETURNING id
                 """,
-                (run_id, session_id, prompt),
+                (run_id, session_id, prompt, idempotency_key),
             )
-        return run_id
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Postgres did not return the created run.")
+        return str(row[0])
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
         async with await psycopg.AsyncConnection.connect(
@@ -50,8 +69,11 @@ class PostgresSessionStore:
         ) as conn:
             cursor = await conn.execute(
                 """
-                SELECT id, session_id, prompt, status, acceptance_criteria,
-                       metadata, started_at, ended_at, error_message, created_at
+                SELECT id, session_id, prompt, status, idempotency_key,
+                       acceptance_criteria, metadata, started_at, ended_at,
+                       error_message, retention_until, archived_at,
+                       archive_reason, claimed_by, claim_expires_at,
+                       last_heartbeat_at, attempt_count, created_at
                 FROM runs
                 WHERE id = %s
                 """,
@@ -59,7 +81,12 @@ class PostgresSessionStore:
             )
             return await cursor.fetchone()
 
-    async def claim_next_queued_run(self) -> RunRecord | None:
+    async def claim_next_queued_run(
+        self,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int = 60,
+    ) -> RunRecord | None:
         async with await psycopg.AsyncConnection.connect(
             self.database_url,
             row_factory=dict_row,
@@ -77,15 +104,170 @@ class PostgresSessionStore:
                     )
                     UPDATE runs
                     SET status = 'running',
-                        started_at = COALESCE(started_at, NOW())
+                        started_at = COALESCE(started_at, NOW()),
+                        claimed_by = %s,
+                        claim_expires_at = NOW() + (%s * INTERVAL '1 second'),
+                        last_heartbeat_at = NOW(),
+                        attempt_count = attempt_count + 1
                     FROM next_run
                     WHERE runs.id = next_run.id
                     RETURNING runs.id, runs.session_id, runs.prompt, runs.status,
                               runs.acceptance_criteria
-                    """
+                    """,
+                    (worker_id, lease_seconds),
                 )
                 row = await cursor.fetchone()
         return RunRecord(**row) if row else None
+
+    async def fail_runs_over_attempt_limit(
+        self,
+        *,
+        max_attempts: int = RUN_MAX_ATTEMPTS,
+    ) -> list[dict[str, Any]]:
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'failed',
+                        error_message = 'Run exceeded maximum automatic resume attempts.',
+                        ended_at = NOW(),
+                        claimed_by = NULL,
+                        claim_expires_at = NULL
+                    WHERE status IN ('queued', 'resume_queued')
+                      AND attempt_count >= %s
+                    RETURNING id, session_id, attempt_count
+                    """,
+                    (max_attempts,),
+                )
+                exhausted_runs = await cursor.fetchall()
+                for run in exhausted_runs:
+                    await conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'failed',
+                            result_summary = 'Run exceeded maximum automatic resume attempts.',
+                            ended_at = NOW()
+                        WHERE id = (
+                            SELECT id
+                            FROM tasks
+                            WHERE run_id = %s
+                              AND status IN ('pending', 'resume_queued', 'running')
+                            ORDER BY seq ASC
+                            LIMIT 1
+                        )
+                        """,
+                        (run["id"],),
+                    )
+        return [dict(run) for run in exhausted_runs]
+
+    async def heartbeat_run_lease(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        lease_seconds: int = 60,
+    ) -> bool:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    UPDATE runs
+                    SET last_heartbeat_at = NOW(),
+                        claim_expires_at = NOW() + (%s * INTERVAL '1 second')
+                    WHERE id = %s
+                      AND status = 'running'
+                      AND claimed_by = %s
+                    RETURNING id
+                    """,
+                    (lease_seconds, run_id, worker_id),
+                )
+                if await cursor.fetchone() is None:
+                    return False
+                await conn.execute(
+                    """
+                    UPDATE task_attempts
+                    SET last_heartbeat_at = NOW(),
+                        heartbeat_expires_at = NOW() + (%s * INTERVAL '1 second')
+                    WHERE run_id = %s
+                      AND status = 'running'
+                    """,
+                    (lease_seconds, run_id),
+                )
+                return True
+
+    async def requeue_expired_run_leases(self) -> list[dict[str, Any]]:
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    """
+                    WITH expired AS (
+                        SELECT id, session_id, claimed_by, last_heartbeat_at
+                        FROM runs
+                        WHERE status = 'running'
+                          AND claim_expires_at < NOW()
+                        FOR UPDATE
+                    )
+                    UPDATE runs
+                    SET status = 'resume_queued',
+                        error_message = 'Run lease expired before Brain heartbeat.',
+                        ended_at = NULL,
+                        claimed_by = NULL,
+                        claim_expires_at = NULL
+                    FROM expired
+                    WHERE runs.id = expired.id
+                    RETURNING runs.id, runs.session_id, expired.claimed_by,
+                              expired.last_heartbeat_at
+                    """
+                )
+                expired_runs = await cursor.fetchall()
+                for run in expired_runs:
+                    await conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'resume_queued',
+                            ended_at = NULL
+                        WHERE id = (
+                            SELECT id
+                            FROM tasks
+                            WHERE run_id = %s
+                              AND status = 'running'
+                            ORDER BY seq ASC
+                            LIMIT 1
+                        )
+                        """,
+                        (run["id"],),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE task_attempts
+                        SET status = 'failed',
+                            failure_kind = %s,
+                            failure_reason = 'Run lease expired before Brain heartbeat.',
+                            ended_at = NOW()
+                        WHERE run_id = %s
+                          AND status = 'running'
+                        """,
+                        (FAILURE_KIND_BRAIN_CRASH, run["id"]),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE tool_calls
+                        SET status = 'orphaned',
+                            failure_kind = %s,
+                            ended_at = NOW()
+                        WHERE run_id = %s
+                          AND status IN ('requested', 'running')
+                        """,
+                        (FAILURE_KIND_BRAIN_CRASH, run["id"]),
+                    )
+        return [dict(run) for run in expired_runs]
 
     async def update_run(
         self,
@@ -104,33 +286,57 @@ class PostgresSessionStore:
             if acceptance_criteria is not None
             else None
         )
-        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
-            await conn.execute(
-                """
-                UPDATE runs
-                SET status = %s,
-                    error_message = COALESCE(%s, error_message),
-                    started_at = CASE WHEN %s THEN COALESCE(started_at, NOW())
-                                      ELSE started_at END,
-                    ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END,
-                    metadata = metadata || %s::jsonb,
-                    acceptance_criteria = CASE
-                        WHEN %s::jsonb IS NULL THEN acceptance_criteria
-                        ELSE %s::jsonb
+        async with await psycopg.AsyncConnection.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as conn:
+            async with conn.transaction():
+                current_cursor = await conn.execute(
+                    "SELECT status FROM runs WHERE id = %s FOR UPDATE",
+                    (run_id,),
+                )
+                current = await current_cursor.fetchone()
+                if current is None:
+                    raise ValueError("Run was not found.")
+                validate_run_status_transition(str(current["status"]), status)
+                await conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = %s,
+                        error_message = COALESCE(%s, error_message),
+                        started_at = CASE WHEN %s THEN COALESCE(started_at, NOW())
+                                          ELSE started_at END,
+                        ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END,
+                        metadata = metadata || %s::jsonb,
+                        acceptance_criteria = CASE
+                            WHEN %s::jsonb IS NULL THEN acceptance_criteria
+                            ELSE %s::jsonb
+                            END,
+                    claimed_by = CASE
+                        WHEN %s IN ('completed', 'blocked', 'failed')
+                        THEN NULL
+                        ELSE claimed_by
+                        END,
+                    claim_expires_at = CASE
+                        WHEN %s IN ('completed', 'blocked', 'failed')
+                        THEN NULL
+                        ELSE claim_expires_at
                         END
-                WHERE id = %s
-                """,
-                (
-                    status,
-                    error_message,
-                    started,
-                    ended,
-                    metadata_json,
-                    acceptance_criteria_json,
-                    acceptance_criteria_json,
-                    run_id,
-                ),
-            )
+                    WHERE id = %s
+                    """,
+                    (
+                        status,
+                        error_message,
+                        started,
+                        ended,
+                        metadata_json,
+                        acceptance_criteria_json,
+                        acceptance_criteria_json,
+                        status,
+                        status,
+                        run_id,
+                    ),
+                )
 
     async def create_tasks(
         self,
@@ -219,6 +425,7 @@ class PostgresSessionStore:
         *,
         run_id: str,
         task_id: str,
+        lease_seconds: int = RUN_LEASE_SECONDS,
     ) -> TaskAttemptRecord:
         attempt_id = f"taskattempt_{uuid4().hex}"
         async with await psycopg.AsyncConnection.connect(
@@ -228,14 +435,17 @@ class PostgresSessionStore:
             cursor = await conn.execute(
                 """
                 INSERT INTO task_attempts
-                    (id, run_id, task_id, attempt_no, status)
-                SELECT %s, %s, %s, COALESCE(MAX(attempt_no), 0) + 1, 'running'
+                    (id, run_id, task_id, attempt_no, status,
+                     last_heartbeat_at, heartbeat_expires_at)
+                SELECT %s, %s, %s, COALESCE(MAX(attempt_no), 0) + 1, 'running',
+                       NOW(), NOW() + (%s * INTERVAL '1 second')
                 FROM task_attempts
                 WHERE task_id = %s
                 RETURNING id, run_id, task_id, attempt_no, status,
-                          claude_session_id
+                          claude_session_id, failure_kind, last_heartbeat_at,
+                          heartbeat_expires_at
                 """,
-                (attempt_id, run_id, task_id, task_id),
+                (attempt_id, run_id, task_id, lease_seconds, task_id),
             )
             row = await cursor.fetchone()
         if row is None:
@@ -248,6 +458,7 @@ class PostgresSessionStore:
         status: str,
         *,
         claude_session_id: str | None = None,
+        failure_kind: str | None = None,
         failure_reason: str | None = None,
         ended: bool = False,
     ) -> None:
@@ -257,11 +468,19 @@ class PostgresSessionStore:
                 UPDATE task_attempts
                 SET status = %s,
                     claude_session_id = COALESCE(%s, claude_session_id),
+                    failure_kind = COALESCE(%s, failure_kind),
                     failure_reason = COALESCE(%s, failure_reason),
                     ended_at = CASE WHEN %s THEN NOW() ELSE ended_at END
                 WHERE id = %s
                 """,
-                (status, claude_session_id, failure_reason, ended, attempt_id),
+                (
+                    status,
+                    claude_session_id,
+                    failure_kind,
+                    failure_reason,
+                    ended,
+                    attempt_id,
+                ),
             )
 
     async def create_tool_call(
@@ -354,6 +573,45 @@ class PostgresSessionStore:
                 )
         return run
 
+    async def archive_expired_state(self) -> dict[str, int]:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            async with conn.transaction():
+                archived_runs_cursor = await conn.execute(
+                    """
+                    UPDATE runs
+                    SET archived_at = NOW(),
+                        archive_reason = 'retention_expired'
+                    WHERE retention_until < NOW()
+                      AND archived_at IS NULL
+                      AND status IN ('completed', 'blocked', 'failed')
+                    RETURNING id
+                    """
+                )
+                archived_runs = await archived_runs_cursor.fetchall()
+                archived_sessions_cursor = await conn.execute(
+                    """
+                    UPDATE sessions
+                    SET status = 'archived',
+                        archived_at = NOW(),
+                        updated_at = NOW()
+                    WHERE expires_at < NOW()
+                      AND status = 'active'
+                      AND archived_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM runs
+                          WHERE runs.session_id = sessions.id
+                            AND runs.status IN ('queued', 'running', 'resume_queued')
+                      )
+                    RETURNING id
+                    """
+                )
+                archived_sessions = await archived_sessions_cursor.fetchall()
+        return {
+            "runs_archived": len(archived_runs),
+            "sessions_archived": len(archived_sessions),
+        }
+
     async def get_run_recovery_bundle(self, run_id: str) -> dict[str, Any] | None:
         run = await self.get_run(run_id)
         if run is None:
@@ -366,7 +624,8 @@ class PostgresSessionStore:
             attempt_cursor = await conn.execute(
                 """
                 SELECT id, run_id, task_id, attempt_no, status, claude_session_id,
-                       failure_reason
+                       failure_kind, failure_reason, last_heartbeat_at,
+                       heartbeat_expires_at
                 FROM task_attempts
                 WHERE run_id = %s
                 ORDER BY created_at DESC
@@ -377,7 +636,8 @@ class PostgresSessionStore:
             tool_cursor = await conn.execute(
                 """
                 SELECT id, run_id, task_id, task_attempt_id, tool_name, input,
-                       status, latest_execution_id, failure_kind, created_at
+                       status, latest_execution_id, failure_kind, created_at,
+                       ended_at
                 FROM tool_calls
                 WHERE run_id = %s
                 ORDER BY created_at DESC

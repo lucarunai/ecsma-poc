@@ -18,11 +18,20 @@ class SessionLayerClient:
             response.raise_for_status()
             return str(response.json()["session_id"])
 
-    async def create_run(self, session_id: str, prompt: str) -> str:
+    async def create_run(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {"prompt": prompt}
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.post(
                 f"/api/sessions/{session_id}/runs",
-                json={"prompt": prompt},
+                json=payload,
             )
             response.raise_for_status()
             return str(response.json()["run_id"])
@@ -41,13 +50,60 @@ class SessionLayerClient:
             response.raise_for_status()
             return response.json()
 
-    async def claim_next_queued_run(self) -> RunRecord | None:
+    async def claim_next_queued_run(
+        self,
+        *,
+        worker_id: str | None = None,
+        lease_seconds: int = 60,
+    ) -> RunRecord | None:
+        payload: dict[str, Any] = {"lease_seconds": lease_seconds}
+        if worker_id:
+            payload["worker_id"] = worker_id
         async with httpx.AsyncClient(base_url=self.base_url) as client:
-            response = await client.post("/internal/runs/claim")
+            response = await client.post("/internal/runs/claim", json=payload)
             if response.status_code == 204:
                 return None
             response.raise_for_status()
             return RunRecord(**response.json())
+
+    async def requeue_expired_run_leases(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post("/internal/runs/requeue-expired-leases")
+            response.raise_for_status()
+            return response.json()
+
+    async def fail_runs_over_attempt_limit(
+        self,
+        *,
+        max_attempts: int = 5,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                "/internal/runs/fail-exhausted-attempts",
+                json={"max_attempts": max_attempts},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def heartbeat_run_lease(
+        self,
+        *,
+        run_id: str,
+        worker_id: str,
+        lease_seconds: int = 60,
+    ) -> bool:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                f"/internal/runs/{run_id}/heartbeat",
+                json={
+                    "worker_id": worker_id,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+            if response.status_code == 409:
+                return False
+            response.raise_for_status()
+            return True
 
     async def update_run(
         self,
@@ -122,12 +178,14 @@ class SessionLayerClient:
         *,
         run_id: str,
         task_id: str,
+        lease_seconds: int = 60,
     ) -> TaskAttemptRecord:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.post(
                 f"/internal/tasks/{task_id}/attempts",
                 json={
                     "run_id": run_id,
+                    "lease_seconds": lease_seconds,
                 },
             )
             response.raise_for_status()
@@ -139,6 +197,7 @@ class SessionLayerClient:
         status: str,
         *,
         claude_session_id: str | None = None,
+        failure_kind: str | None = None,
         failure_reason: str | None = None,
         ended: bool = False,
     ) -> None:
@@ -148,6 +207,7 @@ class SessionLayerClient:
                 json={
                     "status": status,
                     "claude_session_id": claude_session_id,
+                    "failure_kind": failure_kind,
                     "failure_reason": failure_reason,
                     "ended": ended,
                 },

@@ -18,6 +18,16 @@ class StaticUiContractTests(unittest.TestCase):
         self.assertNotIn("runPlanStatus", html)
         self.assertNotIn("run-plan-list", html)
 
+    def test_run_submit_includes_idempotency_key(self) -> None:
+        html = files("cloud_agent_poc").joinpath("static/index.html").read_text()
+
+        self.assertIn("idempotencyKey", html)
+        self.assertIn("idempotency_key", html)
+        self.assertIn("crypto.randomUUID", html)
+        self.assertIn("run.lease.expired", html)
+        self.assertIn("run.resume.context_loaded", html)
+        self.assertIn("run.resume.exhausted", html)
+
 
 if __name__ == "__main__":
     unittest.main()

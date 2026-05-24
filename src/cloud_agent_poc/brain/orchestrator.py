@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain import AgentTaskResult, SessionEvent, TaskRecord, Workspace
+from ..session_policy import FAILURE_KIND_MODEL_ERROR
 from .claude_agent import ClaudeCodingAgent
 from .planner import AgentTaskPlanner
 
@@ -40,6 +41,13 @@ class RunOrchestrator:
                 event_type="run.resumed" if is_resume else "run.started",
                 payload={"run_id": run_id},
             )
+            if is_resume:
+                await self._emit(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="run.resume.started",
+                    payload={"run_id": run_id, "task_count": len(existing_tasks)},
+                )
             workspace = await self._workspace_for_run(run_id, recovery_bundle)
             run_acceptance_criteria = self._run_acceptance_criteria_from_bundle(
                 recovery_bundle
@@ -93,6 +101,20 @@ class RunOrchestrator:
                     },
                 )
             handoffs = self._handoffs_from_bundle(recovery_bundle)
+            if is_resume:
+                await self._emit(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="run.resume.context_loaded",
+                    payload={
+                        "run_id": run_id,
+                        "task_count": len(tasks),
+                        "handoff_count": len(handoffs),
+                        "tool_call_count": len(
+                            (recovery_bundle or {}).get("tool_calls", [])
+                        ),
+                    },
+                )
             for task in tasks:
                 if task.status == "completed":
                     continue
@@ -136,6 +158,13 @@ class RunOrchestrator:
                 event_type="run.completed",
                 payload={"run_id": run_id},
             )
+            if is_resume:
+                await self._emit(
+                    session_id=session_id,
+                    run_id=run_id,
+                    event_type="run.resume.completed",
+                    payload={"run_id": run_id},
+                )
             await self._cleanup_workspace(session_id=session_id, run_id=run_id)
         except Exception as exc:
             await self.store.update_run(
@@ -202,6 +231,7 @@ class RunOrchestrator:
             await self.store.update_task_attempt(
                 attempt.id,
                 "failed",
+                failure_kind=FAILURE_KIND_MODEL_ERROR,
                 failure_reason=str(exc),
                 ended=True,
             )
@@ -469,7 +499,9 @@ class RunOrchestrator:
     ) -> str | None:
         if task.status != "resume_queued":
             return None
-        failed_calls = [
+        recovery_bundle = recovery_bundle or {}
+        attention_statuses = {"failed", "orphaned", "requested", "running"}
+        tool_calls = [
             {
                 "tool_call_id": call["id"],
                 "tool_name": call["tool_name"],
@@ -477,16 +509,52 @@ class RunOrchestrator:
                 "status": call["status"],
                 "failure_kind": call.get("failure_kind"),
                 "latest_execution_id": call.get("latest_execution_id"),
+                "created_at": _iso_or_none(call.get("created_at")),
+                "ended_at": _iso_or_none(call.get("ended_at")),
             }
-            for call in (recovery_bundle or {}).get("tool_calls", [])
-            if call["task_id"] == task.id and call["status"] == "failed"
+            for call in recovery_bundle.get("tool_calls", [])
+            if call["task_id"] == task.id and call["status"] in attention_statuses
         ]
-        if not failed_calls:
-            return "The previous task attempt stopped before a failed tool context was recorded."
-        return (
-            "The previous task attempt stopped after these tool failures:\n"
-            f"{json.dumps(failed_calls[:3], ensure_ascii=True, indent=2)}"
-        )
+        attempts = [
+            {
+                "task_attempt_id": attempt.get("id"),
+                "status": attempt.get("status"),
+                "failure_kind": attempt.get("failure_kind"),
+                "failure_reason": attempt.get("failure_reason"),
+                "last_heartbeat_at": _iso_or_none(attempt.get("last_heartbeat_at")),
+                "heartbeat_expires_at": _iso_or_none(
+                    attempt.get("heartbeat_expires_at")
+                ),
+                "claude_session_id": attempt.get("claude_session_id"),
+            }
+            for attempt in recovery_bundle.get("task_attempts", [])
+            if attempt.get("task_id") == task.id
+        ][:3]
+        context = {
+            "schema_version": "recovery_context.v1",
+            "reason": (
+                "resume_queued task is being retried from durable workspace state"
+            ),
+            "current_task": {
+                "task_id": task.id,
+                "seq": task.seq,
+                "title": task.title,
+                "status": task.status,
+                "acceptance_criteria": task.acceptance_criteria,
+            },
+            "prior_attempts": attempts,
+            "tool_calls_requiring_attention": tool_calls[:5],
+            "resume_guidance": [
+                "Inspect current workspace state before repeating side-effecting work.",
+                "Treat orphaned or requested tool calls as unknown outcome until verified.",
+                "Use acceptance criteria to decide whether the task is already complete.",
+            ],
+        }
+        if not tool_calls and not attempts:
+            context["notes"] = [
+                "No failed, orphaned, requested, or running tool call was recorded before recovery."
+            ]
+        return json.dumps(context, ensure_ascii=True, indent=2)
 
     async def _emit_task(
         self,
@@ -562,3 +630,12 @@ class RunOrchestrator:
             size_bytes=len(content),
         )
         return transcript_id, str(path)
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)

@@ -32,6 +32,9 @@ class TaskAttemptRecord:
     attempt_no: int
     status: str
     claude_session_id: str | None = None
+    failure_kind: str | None = None
+    last_heartbeat_at: datetime | None = None
+    heartbeat_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)

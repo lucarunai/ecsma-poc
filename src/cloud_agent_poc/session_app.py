@@ -16,6 +16,7 @@ from .session_store import PostgresSessionStore
 
 class RunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 class RunUpdateRequest(BaseModel):
@@ -25,6 +26,20 @@ class RunUpdateRequest(BaseModel):
     ended: bool = False
     metadata: dict[str, Any] | None = None
     acceptance_criteria: list[dict[str, Any]] | None = None
+
+
+class RunClaimRequest(BaseModel):
+    worker_id: str | None = Field(default=None, max_length=200)
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
+
+
+class RunHeartbeatRequest(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=200)
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
+
+
+class RunAttemptLimitRequest(BaseModel):
+    max_attempts: int = Field(default=5, ge=1, le=100)
 
 
 class PlannedTaskRequest(BaseModel):
@@ -46,11 +61,13 @@ class TaskUpdateRequest(BaseModel):
 
 class TaskAttemptCreateRequest(BaseModel):
     run_id: str
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
 
 
 class TaskAttemptUpdateRequest(BaseModel):
     status: str
     claude_session_id: str | None = None
+    failure_kind: str | None = Field(default=None, max_length=100)
     failure_reason: str | None = None
     ended: bool = False
 
@@ -106,6 +123,11 @@ class ToolExecutionCreateRequest(BaseModel):
     task_attempt_id: str | None = None
     failure_kind: str | None = None
     envelope: dict[str, Any]
+
+
+class RetentionArchiveResponse(BaseModel):
+    runs_archived: int
+    sessions_archived: int
 
 
 def event_to_dict(event: SessionEvent) -> dict[str, Any]:
@@ -164,7 +186,11 @@ async def create_run(
     body: RunCreateRequest,
 ) -> dict[str, str]:
     try:
-        run_id = await store.create_run(session_id, body.prompt)
+        run_id = await store.create_run(
+            session_id,
+            body.prompt,
+            idempotency_key=body.idempotency_key,
+        )
     except Exception as exc:
         raise HTTPException(status_code=404, detail="Session was not found.") from exc
     await store.append_event(
@@ -192,6 +218,12 @@ async def wake_run(run_id: str) -> dict[str, str]:
             status_code=409,
             detail="Only blocked or failed runs can be woken.",
         )
+    await store.append_event(
+        session_id=run["session_id"],
+        run_id=run_id,
+        event_type="run.resume.requested",
+        payload={"run_id": run_id, "reason": "tool_failure_resume"},
+    )
     await store.append_event(
         session_id=run["session_id"],
         run_id=run_id,
@@ -227,8 +259,12 @@ async def session_events(
 
 
 @app.post("/internal/runs/claim", response_model=None)
-async def claim_next_queued_run():
-    run = await store.claim_next_queued_run()
+async def claim_next_queued_run(body: RunClaimRequest | None = None):
+    body = body or RunClaimRequest()
+    run = await store.claim_next_queued_run(
+        worker_id=body.worker_id,
+        lease_seconds=body.lease_seconds,
+    )
     if run is None:
         return Response(status_code=204)
     return {
@@ -239,18 +275,98 @@ async def claim_next_queued_run():
     }
 
 
+@app.post("/internal/runs/requeue-expired-leases")
+async def requeue_expired_run_leases() -> dict[str, Any]:
+    expired_runs = await store.requeue_expired_run_leases()
+    for run in expired_runs:
+        await store.append_event(
+            session_id=run["session_id"],
+            run_id=run["id"],
+            event_type="run.lease.expired",
+            payload={
+                "run_id": run["id"],
+                "claimed_by": run.get("claimed_by"),
+                "last_heartbeat_at": (
+                    run["last_heartbeat_at"].isoformat()
+                    if run.get("last_heartbeat_at") is not None
+                    else None
+                ),
+            },
+        )
+        await store.append_event(
+            session_id=run["session_id"],
+            run_id=run["id"],
+            event_type="run.resume.requested",
+            payload={"run_id": run["id"], "reason": "run_lease_expired"},
+        )
+    return {"runs_requeued": len(expired_runs)}
+
+
+@app.post("/internal/runs/fail-exhausted-attempts")
+async def fail_runs_over_attempt_limit(
+    body: RunAttemptLimitRequest,
+) -> dict[str, Any]:
+    exhausted_runs = await store.fail_runs_over_attempt_limit(
+        max_attempts=body.max_attempts,
+    )
+    for run in exhausted_runs:
+        await store.append_event(
+            session_id=run["session_id"],
+            run_id=run["id"],
+            event_type="run.resume.exhausted",
+            payload={
+                "run_id": run["id"],
+                "attempt_count": run.get("attempt_count"),
+                "max_attempts": body.max_attempts,
+            },
+        )
+        await store.append_event(
+            session_id=run["session_id"],
+            run_id=run["id"],
+            event_type="run.failed",
+            payload={
+                "run_id": run["id"],
+                "error": "Run exceeded maximum automatic resume attempts.",
+            },
+        )
+    return {"runs_failed": len(exhausted_runs)}
+
+
+@app.post("/internal/runs/{run_id}/heartbeat")
+async def heartbeat_run_lease(
+    run_id: str,
+    body: RunHeartbeatRequest,
+) -> dict[str, Any]:
+    ok = await store.heartbeat_run_lease(
+        run_id=run_id,
+        worker_id=body.worker_id,
+        lease_seconds=body.lease_seconds,
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="Run lease was not refreshed.")
+    return {"status": "ok"}
+
+
 @app.patch("/internal/runs/{run_id}")
 async def update_run(run_id: str, body: RunUpdateRequest) -> dict[str, str]:
-    await store.update_run(
-        run_id,
-        body.status,
-        error_message=body.error_message,
-        started=body.started,
-        ended=body.ended,
-        metadata=body.metadata,
-        acceptance_criteria=body.acceptance_criteria,
-    )
+    try:
+        await store.update_run(
+            run_id,
+            body.status,
+            error_message=body.error_message,
+            started=body.started,
+            ended=body.ended,
+            metadata=body.metadata,
+            acceptance_criteria=body.acceptance_criteria,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "ok"}
+
+
+@app.post("/internal/retention/archive")
+async def archive_expired_state() -> RetentionArchiveResponse:
+    return RetentionArchiveResponse(**await store.archive_expired_state())
 
 
 @app.post("/internal/runs/{run_id}/tasks")
@@ -287,6 +403,7 @@ async def create_task_attempt(
     attempt = await store.create_task_attempt(
         run_id=body.run_id,
         task_id=task_id,
+        lease_seconds=body.lease_seconds,
     )
     return attempt.__dict__
 
@@ -300,6 +417,7 @@ async def update_task_attempt(
         attempt_id,
         body.status,
         claude_session_id=body.claude_session_id,
+        failure_kind=body.failure_kind,
         failure_reason=body.failure_reason,
         ended=body.ended,
     )

@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from cloud_agent_poc.brain.orchestrator import RunOrchestrator
@@ -164,6 +165,11 @@ class CompletingAgent:
         )
 
 
+class RaisingAgent:
+    async def implement(self, **_) -> AgentTaskResult:
+        raise RuntimeError("model stream interrupted")
+
+
 class StaticWorkspaceService:
     def __init__(self) -> None:
         self.deleted_run_ids: list[str] = []
@@ -320,6 +326,28 @@ class RunCriteriaRecoveryStore(RecordingStore):
 
 
 class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_exception_marks_attempt_with_model_error(self) -> None:
+        store = RecordingStore()
+        orchestrator = RunOrchestrator(
+            store=store,
+            planner=StaticPlanner(),
+            agent=RaisingAgent(),
+            sandbox=StaticWorkspaceService(),
+        )
+
+        await orchestrator.execute(
+            session_id="session",
+            run_id="run",
+            prompt="Clone a repo and edit it.",
+        )
+
+        failed_attempts = [
+            kwargs for _, status, kwargs in store.task_attempt_updates
+            if status == "failed"
+        ]
+        self.assertEqual(failed_attempts[0]["failure_kind"], "model_error")
+        self.assertEqual(failed_attempts[0]["failure_reason"], "model stream interrupted")
+
     async def test_blocked_task_stops_following_tasks(self) -> None:
         store = RecordingStore()
         agent = BlockingAgent()
@@ -546,12 +574,28 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"input": {', agent.recovery_contexts[0])
         self.assertIn('"path": "hello.py"', agent.recovery_contexts[0])
         self.assertIn("sbxexec_failed", agent.recovery_contexts[0])
+        recovery_context = json.loads(agent.recovery_contexts[0])
+        self.assertEqual(recovery_context["schema_version"], "recovery_context.v1")
+        self.assertEqual(
+            recovery_context["tool_calls_requiring_attention"][0]["tool_call_id"],
+            "toolcall_failed",
+        )
         self.assertEqual(
             store.handoffs[0]["payload"]["planned_task_results"][0]["status"],
             "passed",
         )
-        self.assertIn("run.resumed", [event_type for event_type, _ in store.events])
-        self.assertIn("run.completed", [event_type for event_type, _ in store.events])
+        event_types = [event_type for event_type, _ in store.events]
+        self.assertIn("run.resumed", event_types)
+        self.assertIn("run.resume.started", event_types)
+        self.assertIn("run.resume.context_loaded", event_types)
+        self.assertIn("run.resume.completed", event_types)
+        self.assertIn("run.completed", event_types)
+        context_events = [
+            payload for event_type, payload in store.events
+            if event_type == "run.resume.context_loaded"
+        ]
+        self.assertEqual(context_events[0]["handoff_count"], 1)
+        self.assertEqual(context_events[0]["tool_call_count"], 1)
 
     def test_recovery_context_only_includes_failed_calls_for_current_task(self) -> None:
         task = TaskRecord(
@@ -602,6 +646,56 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sbxexec_failed", context)
         self.assertNotIn("toolcall_success", context)
         self.assertNotIn("toolcall_other_task", context)
+        self.assertEqual(
+            json.loads(context)["tool_calls_requiring_attention"][0]["status"],
+            "failed",
+        )
+
+    def test_recovery_context_includes_orphaned_tool_calls(self) -> None:
+        task = TaskRecord(
+            id="task_resume",
+            run_id="run",
+            seq=2,
+            kind="model_task",
+            title="Edit repo",
+            description="Add code.",
+            acceptance_criteria=["Code changed."],
+            status="resume_queued",
+        )
+        context = RunOrchestrator._recovery_context(
+            {
+                "task_attempts": [
+                    {
+                        "id": "attempt_brain_crash",
+                        "task_id": "task_resume",
+                        "status": "failed",
+                        "failure_kind": "brain_crash",
+                        "failure_reason": "Run lease expired.",
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "id": "toolcall_orphaned",
+                        "task_id": "task_resume",
+                        "tool_name": "write_workspace_file",
+                        "input": {"path": "hello.py"},
+                        "status": "orphaned",
+                        "failure_kind": "brain_crash",
+                    }
+                ],
+            },
+            task,
+        )
+
+        parsed = json.loads(context)
+        self.assertEqual(
+            parsed["prior_attempts"][0]["failure_kind"],
+            "brain_crash",
+        )
+        self.assertEqual(
+            parsed["tool_calls_requiring_attention"][0]["status"],
+            "orphaned",
+        )
 
     def test_recovery_context_handles_missing_failed_tool_record(self) -> None:
         task = TaskRecord(
@@ -615,10 +709,9 @@ class RunOrchestratorTests(unittest.IsolatedAsyncioTestCase):
             status="resume_queued",
         )
 
-        self.assertEqual(
-            RunOrchestrator._recovery_context({"tool_calls": []}, task),
-            "The previous task attempt stopped before a failed tool context was recorded.",
-        )
+        context = RunOrchestrator._recovery_context({"tool_calls": []}, task)
+        self.assertEqual(json.loads(context)["schema_version"], "recovery_context.v1")
+        self.assertIn("notes", json.loads(context))
 
 
 if __name__ == "__main__":

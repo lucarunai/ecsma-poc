@@ -16,6 +16,7 @@ from .session_client import SessionLayerClient
 
 class RunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 settings = Settings.from_env()
@@ -53,7 +54,11 @@ async def create_run(
     body: RunCreateRequest,
 ) -> dict[str, str]:
     try:
-        run_id = await session_layer.create_run(session_id, body.prompt)
+        run_id = await session_layer.create_run(
+            session_id,
+            body.prompt,
+            idempotency_key=body.idempotency_key,
+        )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(status_code=404, detail="Session was not found.") from exc
