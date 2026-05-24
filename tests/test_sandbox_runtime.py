@@ -2,12 +2,15 @@ import base64
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from cloud_agent_poc.brain.processes import CommandResult
 from cloud_agent_poc.config import Settings
 from cloud_agent_poc.sandbox_manager import KubernetesToolPodRunner, SandboxManagerError
 from cloud_agent_poc.sandbox_protocol import ToolExecutionRequest
 from cloud_agent_poc.sandbox_runtime import execute_runtime_request
+from cloud_agent_poc.sandbox_tools import _command_data
 
 
 class SandboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -30,6 +33,14 @@ class SandboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(envelope.tool_result)
             self.assertTrue(envelope.tool_result.ok)
             self.assertEqual(workspace.joinpath("hello.py").read_text(), "print('hello')\n")
+            self.assertEqual(envelope.runtime.runtime_profile, "direct")
+            self.assertEqual(envelope.runtime.isolation, "process")
+            self.assertEqual(envelope.runtime.resource_limits["ephemeral_storage"], "1Gi")
+            self.assertEqual(envelope.runtime.resource_limits["timeout_seconds"], 180)
+            self.assertEqual(envelope.runtime.resource_limits["tool_output_bytes"], 4000)
+            self.assertEqual(envelope.runtime.resource_limits["workspace_bytes"], 104857600)
+            self.assertEqual(envelope.runtime.workspace["file_count"], 1)
+            self.assertGreater(envelope.runtime.workspace["bytes"], 0)
 
     async def test_file_escape_returns_tool_error_without_runtime_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -50,6 +61,71 @@ class SandboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(envelope.tool_result)
             self.assertFalse(envelope.tool_result.ok)
             self.assertIn("escaped workspace", envelope.tool_result.summary)
+
+    async def test_write_tool_rejects_workspace_size_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            settings = replace(_settings(workspace), sandbox_workspace_bytes_limit=5)
+            envelope = await execute_runtime_request(
+                ToolExecutionRequest(
+                    execution_id="sbxexec_quota",
+                    run_id="run_0123456789abcdef0123456789abcdef",
+                    tool_call_id="toolcall_quota",
+                    tool_name="write_workspace_file",
+                    args={"path": "too-large.txt", "content": "123456"},
+                ),
+                settings=settings,
+                workspace_path=workspace,
+            )
+
+            self.assertEqual(envelope.execution_status, "succeeded")
+            self.assertTrue(envelope.tool_result)
+            self.assertFalse(envelope.tool_result.ok)
+            self.assertIn("Workspace size limit exceeded", envelope.tool_result.summary)
+            self.assertFalse(workspace.joinpath("too-large.txt").exists())
+
+    async def test_read_tool_rejects_symlink_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            workspace.joinpath("target.txt").write_text("secret", encoding="utf-8")
+            workspace.joinpath("link.txt").symlink_to("target.txt")
+
+            envelope = await execute_runtime_request(
+                ToolExecutionRequest(
+                    execution_id="sbxexec_symlink",
+                    run_id="run_0123456789abcdef0123456789abcdef",
+                    tool_call_id="toolcall_symlink",
+                    tool_name="read_workspace_file",
+                    args={"path": "link.txt"},
+                ),
+                settings=_settings(workspace),
+                workspace_path=workspace,
+            )
+
+            self.assertEqual(envelope.execution_status, "succeeded")
+            self.assertTrue(envelope.tool_result)
+            self.assertFalse(envelope.tool_result.ok)
+            self.assertIn("Symlink workspace files are not allowed", envelope.tool_result.summary)
+
+    async def test_command_output_is_capped_with_evidence(self) -> None:
+        settings = replace(_settings(Path("/tmp/workspace")), sandbox_tool_output_bytes_limit=4)
+        data = _command_data(
+            CommandResult(
+                command=["python", "-m", "unittest"],
+                returncode=1,
+                stdout="abcdef",
+                stderr="123456",
+            ),
+            settings=settings,
+        )
+
+        self.assertEqual(data["stdout"], "cdef")
+        self.assertEqual(data["stderr"], "3456")
+        self.assertTrue(data["stdout_truncated"])
+        self.assertTrue(data["stderr_truncated"])
+        self.assertEqual(data["stdout_original_bytes"], 6)
+        self.assertEqual(data["stderr_original_bytes"], 6)
+        self.assertEqual(data["output_limit_bytes"], 4)
 
 
 class SandboxPodManifestTests(unittest.TestCase):
@@ -152,8 +228,16 @@ class SandboxPodManifestTests(unittest.TestCase):
         self.assertEqual(
             container["resources"],
             {
-                "requests": {"cpu": "100m", "memory": "128Mi"},
-                "limits": {"cpu": "500m", "memory": "512Mi"},
+                "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi",
+                    "ephemeral-storage": "128Mi",
+                },
+                "limits": {
+                    "cpu": "500m",
+                    "memory": "512Mi",
+                    "ephemeral-storage": "1Gi",
+                },
             },
         )
         mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
@@ -258,9 +342,60 @@ class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope.execution_id, "sbxexec_crash")
         self.assertEqual(envelope.runtime.pod_name, "sandbox-tool-crash")
         self.assertEqual(envelope.runtime.pod_phase, "Unknown")
+        self.assertEqual(envelope.runtime.runtime_profile, "kubernetes_container")
+        self.assertEqual(envelope.runtime.isolation, "container")
+        self.assertEqual(envelope.runtime.network_policy, "sandbox-tool-default-deny")
+        self.assertEqual(envelope.runtime.egress_policy, "default-deny")
+        self.assertEqual(envelope.runtime.resource_limits["ephemeral_storage"], "1Gi")
+        self.assertEqual(envelope.runtime.workspace["path"], "/sandboxes")
         self.assertIsNotNone(envelope.runtime.duration_ms)
         self.assertIn("HTTP 404", envelope.failure_message or "")
         self.assertEqual(deleted_pods, ["sandbox-tool-crash"])
+
+    async def test_kubernetes_runner_sanitizes_execution_id_for_pod_name(self) -> None:
+        class DummyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+        runner.namespace = "cloud-agent-poc"
+        runner._client = lambda: DummyClient()
+
+        created_pods = []
+        deleted_pods = []
+
+        async def create_pod(_client, pod_name, _request):
+            created_pods.append(pod_name)
+
+        async def wait_for_pod(_client, pod_name):
+            raise SandboxManagerError(
+                f'Sandbox Pod lookup failed with HTTP 404: pods "{pod_name}" not found'
+            )
+
+        async def delete_pod(_client, pod_name):
+            deleted_pods.append(pod_name)
+
+        runner._create_pod = create_pod
+        runner._wait_for_pod = wait_for_pod
+        runner._delete_pod = delete_pod
+
+        request = ToolExecutionRequest(
+            run_id="run_0123456789abcdef0123456789abcdef",
+            tool_call_id="toolcall_runtime_evidence",
+            tool_name="write_workspace_file",
+            args={"path": "hello.txt", "content": "hello\n"},
+            execution_id="sbxexec_runtime_evidence",
+        )
+
+        envelope = await runner.execute(request, workspace_path=Path("/sandboxes"))
+
+        self.assertEqual(envelope.runtime.pod_name, "sandbox-tool-runtime-evidence")
+        self.assertEqual(created_pods, ["sandbox-tool-runtime-evidence"])
+        self.assertEqual(deleted_pods, ["sandbox-tool-runtime-evidence"])
 
 
 def _settings(workspace_root: Path) -> Settings:

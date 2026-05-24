@@ -42,11 +42,14 @@ class TestingStrategyArtifactTests(unittest.TestCase):
         self.assertIn("auth can-i", script)
         self.assertIn("get secrets", script)
         self.assertIn("--subresource=exec", script)
+        self.assertIn("networkpolicy sandbox-tool-default-deny", script)
+        self.assertIn("cloud-agent-sandbox-tool", script)
         self.assertIn("GITHUB_TOKEN", script)
         self.assertIn("ANTHROPIC_API_KEY", script)
         self.assertIn("automountServiceAccountToken", script)
         self.assertIn("runAsNonRoot", script)
         self.assertIn("capabilities", script)
+        self.assertIn("ephemeral-storage", script)
 
     def test_v2_chaos_script_covers_recovery_and_ownership_drills(self) -> None:
         script = Path("scripts/k8s-chaos-drill-v2.sh").read_text()

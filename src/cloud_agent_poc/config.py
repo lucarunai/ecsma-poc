@@ -24,6 +24,14 @@ class Settings:
     sandbox_runtime_image: str
     sandbox_tool_timeout_seconds: int
     sandbox_workspace_claim: str
+    sandbox_ephemeral_storage_request: str = "128Mi"
+    sandbox_ephemeral_storage_limit: str = "1Gi"
+    sandbox_network_policy_name: str = "sandbox-tool-default-deny"
+    sandbox_egress_policy: str = "default-deny"
+    sandbox_tool_output_bytes_limit: int = 4000
+    sandbox_runtime_log_bytes_limit: int = 65536
+    sandbox_workspace_bytes_limit: int = 104_857_600
+    sandbox_workspace_file_limit: int = 10_000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -74,5 +82,33 @@ class Settings:
             sandbox_workspace_claim=os.getenv(
                 "SANDBOX_WORKSPACE_CLAIM",
                 "sandbox-workspaces",
+            ),
+            sandbox_ephemeral_storage_request=os.getenv(
+                "SANDBOX_EPHEMERAL_STORAGE_REQUEST",
+                "128Mi",
+            ),
+            sandbox_ephemeral_storage_limit=os.getenv(
+                "SANDBOX_EPHEMERAL_STORAGE_LIMIT",
+                "1Gi",
+            ),
+            sandbox_network_policy_name=os.getenv(
+                "SANDBOX_NETWORK_POLICY_NAME",
+                "sandbox-tool-default-deny",
+            ),
+            sandbox_egress_policy=os.getenv(
+                "SANDBOX_EGRESS_POLICY",
+                "default-deny",
+            ),
+            sandbox_tool_output_bytes_limit=int(
+                os.getenv("SANDBOX_TOOL_OUTPUT_BYTES_LIMIT", "4000")
+            ),
+            sandbox_runtime_log_bytes_limit=int(
+                os.getenv("SANDBOX_RUNTIME_LOG_BYTES_LIMIT", "65536")
+            ),
+            sandbox_workspace_bytes_limit=int(
+                os.getenv("SANDBOX_WORKSPACE_BYTES_LIMIT", "104857600")
+            ),
+            sandbox_workspace_file_limit=int(
+                os.getenv("SANDBOX_WORKSPACE_FILE_LIMIT", "10000")
             ),
         )

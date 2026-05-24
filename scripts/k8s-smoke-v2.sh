@@ -55,7 +55,8 @@ done
 
 log "checking web health at $WEB_URL"
 curl -fsS "$WEB_URL/healthz" >/dev/null
-curl -fsS "$WEB_URL/" | grep -q "Cloud Agent PoC"
+web_index="$(curl -fsS "$WEB_URL/")"
+printf '%s' "$web_index" | grep -q "Cloud Agent PoC"
 
 log "creating user-scoped session through Web API"
 session_json="$(

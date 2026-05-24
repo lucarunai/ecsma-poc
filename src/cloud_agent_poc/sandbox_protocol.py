@@ -24,10 +24,18 @@ class SandboxToolResult(BaseModel):
 
 class SandboxRuntimeMetadata(BaseModel):
     type: str | None = None
+    runtime_profile: str | None = None
+    isolation: str | None = None
+    runtime_class: str | None = None
     pod_name: str | None = None
     pod_phase: str | None = None
     exit_code: int | None = None
     duration_ms: int | None = None
+    network_policy: str | None = None
+    egress_policy: str | None = None
+    resource_limits: dict[str, Any] = Field(default_factory=dict)
+    workspace: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolExecutionEnvelope(BaseModel):

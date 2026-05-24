@@ -107,6 +107,33 @@ class KubernetesSecurityManifestTests(unittest.TestCase):
         self.assertIn("allowPrivilegeEscalation: false", init_container_block)
         self.assertIn("mountPath: /sandboxes", init_container_block)
 
+    def test_v2_sandbox_config_declares_runtime_policy_defaults(self) -> None:
+        configmap = Path("k8s-v2/configmap.yaml").read_text()
+
+        self.assertIn("SANDBOX_EPHEMERAL_STORAGE_REQUEST: 128Mi", configmap)
+        self.assertIn("SANDBOX_EPHEMERAL_STORAGE_LIMIT: 1Gi", configmap)
+        self.assertIn("SANDBOX_NETWORK_POLICY_NAME: sandbox-tool-default-deny", configmap)
+        self.assertIn("SANDBOX_EGRESS_POLICY: default-deny", configmap)
+        self.assertIn('SANDBOX_TOOL_OUTPUT_BYTES_LIMIT: "4000"', configmap)
+        self.assertIn('SANDBOX_RUNTIME_LOG_BYTES_LIMIT: "65536"', configmap)
+        self.assertIn('SANDBOX_WORKSPACE_BYTES_LIMIT: "104857600"', configmap)
+        self.assertIn('SANDBOX_WORKSPACE_FILE_LIMIT: "10000"', configmap)
+
+    def test_v2_sandbox_tool_network_policy_defaults_to_deny(self) -> None:
+        network_policy = Path("k8s-v2/network-policy.yaml").read_text()
+
+        self.assertIn("kind: NetworkPolicy", network_policy)
+        self.assertIn("name: sandbox-tool-default-deny", network_policy)
+        self.assertIn("namespace: cloud-agent-poc-v2", network_policy)
+        self.assertIn("podSelector:", network_policy)
+        self.assertIn("app: cloud-agent-sandbox-tool", network_policy)
+        self.assertIn("policyTypes:", network_policy)
+        self.assertIn("- Ingress", network_policy)
+        self.assertIn("- Egress", network_policy)
+        self.assertNotIn("ipBlock:", network_policy)
+        self.assertNotIn("namespaceSelector:", network_policy)
+        self.assertNotIn("podSelector: {}", network_policy)
+
 
 def _container_block(manifest: str, container_name: str) -> str:
     marker = f"\n        - name: {container_name}\n"

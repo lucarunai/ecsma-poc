@@ -34,6 +34,27 @@ expect_no_token() {
 log "checking namespace $NAMESPACE"
 kubectl get namespace "$NAMESPACE" >/dev/null
 
+log "checking Sandbox tool NetworkPolicy"
+kubectl -n "$NAMESPACE" get networkpolicy sandbox-tool-default-deny >/dev/null
+network_policy_app="$(
+  kubectl -n "$NAMESPACE" get networkpolicy sandbox-tool-default-deny \
+    -o jsonpath='{.spec.podSelector.matchLabels.app}'
+)"
+if [ "$network_policy_app" != "cloud-agent-sandbox-tool" ]; then
+  fail "sandbox-tool-default-deny selector expected app=cloud-agent-sandbox-tool, got '$network_policy_app'"
+fi
+network_policy_types="$(
+  kubectl -n "$NAMESPACE" get networkpolicy sandbox-tool-default-deny \
+    -o jsonpath='{.spec.policyTypes[*]}'
+)"
+if [[ " $network_policy_types " != *" Ingress "* ]]; then
+  fail "sandbox-tool-default-deny must include Ingress policyType, got '$network_policy_types'"
+fi
+if [[ " $network_policy_types " != *" Egress "* ]]; then
+  fail "sandbox-tool-default-deny must include Egress policyType, got '$network_policy_types'"
+fi
+log "sandbox-tool-default-deny policyTypes => $network_policy_types"
+
 log "checking Sandbox Manager RBAC"
 expect_can_i yes create pods
 expect_can_i yes get pods
@@ -85,7 +106,14 @@ assert container['securityContext']['allowPrivilegeEscalation'] is False
 assert container['securityContext']['capabilities']['drop'] == ['ALL']
 assert container['securityContext']['seccompProfile']['type'] == 'RuntimeDefault'
 assert container['resources']['requests']['cpu'] == '100m'
+assert container['resources']['requests']['ephemeral-storage'] == settings.sandbox_ephemeral_storage_request
 assert container['resources']['limits']['memory'] == '512Mi'
+assert container['resources']['limits']['ephemeral-storage'] == settings.sandbox_ephemeral_storage_limit
+runtime_limits = runner._resource_limits()
+assert runtime_limits['tool_output_bytes'] == settings.sandbox_tool_output_bytes_limit
+assert runtime_limits['runtime_log_bytes'] == settings.sandbox_runtime_log_bytes_limit
+assert runtime_limits['workspace_bytes'] == settings.sandbox_workspace_bytes_limit
+assert runtime_limits['workspace_files'] == settings.sandbox_workspace_file_limit
 assert spec['volumes'][1]['emptyDir'] == {}
 assert container['volumeMounts'][0]['subPath'] == 'users/SecurityProbe/run_11111111111111111111111111111111'
 print('one-shot sandbox pod contract ok')

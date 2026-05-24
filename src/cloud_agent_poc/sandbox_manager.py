@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -73,7 +74,7 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                 "workspace_path": str(workspace_path),
             }
         )
-        pod_name = f"sandbox-tool-{execution_id.removeprefix('sbxexec_')[:20]}"
+        pod_name = _pod_name_for_execution(execution_id)
         started = time.monotonic()
         async with self._client() as client:
             await self._create_pod(client, pod_name, request)
@@ -84,20 +85,42 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                     exit_code = _container_exit_code(pod)
                     logs = await self._read_logs(client, pod_name)
                     envelope = _parse_runtime_envelope(logs, request)
-                    envelope.runtime = SandboxRuntimeMetadata(
-                        type="sandbox_pod",
-                        pod_name=pod_name,
-                        pod_phase=phase,
-                        exit_code=exit_code,
-                        duration_ms=_duration_ms(started),
+                    runtime = envelope.runtime.model_copy(
+                        update={
+                            "type": "sandbox_pod",
+                            "runtime_profile": "kubernetes_container",
+                            "isolation": "container",
+                            "pod_name": pod_name,
+                            "pod_phase": phase,
+                            "exit_code": exit_code,
+                            "duration_ms": _duration_ms(started),
+                            "network_policy": self.settings.sandbox_network_policy_name,
+                            "egress_policy": self.settings.sandbox_egress_policy,
+                            "resource_limits": self._resource_limits(),
+                            "output": _output_evidence(envelope, logs),
+                        }
                     )
+                    envelope.runtime = runtime
                     return envelope
                 except SandboxManagerError as exc:
+                    duration_ms = _duration_ms(started)
                     return _runtime_failure_envelope(
                         request,
                         pod_name=pod_name,
                         failure_message=str(exc),
-                        duration_ms=_duration_ms(started),
+                        duration_ms=duration_ms,
+                        runtime_metadata=SandboxRuntimeMetadata(
+                            type="sandbox_pod",
+                            runtime_profile="kubernetes_container",
+                            isolation="container",
+                            pod_name=pod_name,
+                            pod_phase="Unknown",
+                            duration_ms=duration_ms,
+                            network_policy=self.settings.sandbox_network_policy_name,
+                            egress_policy=self.settings.sandbox_egress_policy,
+                            resource_limits=self._resource_limits(),
+                            workspace=_workspace_evidence(workspace_path),
+                        ),
                     )
             finally:
                 await self._delete_pod(client, pod_name)
@@ -142,7 +165,8 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
 
     async def _read_logs(self, client: httpx.AsyncClient, pod_name: str) -> str:
         response = await client.get(
-            f"/api/v1/namespaces/{self.namespace}/pods/{pod_name}/log"
+            f"/api/v1/namespaces/{self.namespace}/pods/{pod_name}/log",
+            params={"limitBytes": str(self.settings.sandbox_runtime_log_bytes_limit)},
         )
         if not response.is_success:
             raise SandboxManagerError(
@@ -204,8 +228,20 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                             "seccompProfile": {"type": "RuntimeDefault"},
                         },
                         "resources": {
-                            "requests": {"cpu": "100m", "memory": "128Mi"},
-                            "limits": {"cpu": "500m", "memory": "512Mi"},
+                            "requests": {
+                                "cpu": "100m",
+                                "memory": "128Mi",
+                                "ephemeral-storage": (
+                                    self.settings.sandbox_ephemeral_storage_request
+                                ),
+                            },
+                            "limits": {
+                                "cpu": "500m",
+                                "memory": "512Mi",
+                                "ephemeral-storage": (
+                                    self.settings.sandbox_ephemeral_storage_limit
+                                ),
+                            },
                         },
                         "volumeMounts": [
                             {
@@ -249,6 +285,18 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
         if not relative_path.parts:
             raise SandboxManagerError("Workspace path must point to a run workspace.")
         return relative_path.as_posix()
+
+    def _resource_limits(self) -> dict[str, object]:
+        return {
+            "cpu": "500m",
+            "memory": "512Mi",
+            "ephemeral_storage": self.settings.sandbox_ephemeral_storage_limit,
+            "timeout_seconds": self.settings.sandbox_tool_timeout_seconds,
+            "tool_output_bytes": self.settings.sandbox_tool_output_bytes_limit,
+            "runtime_log_bytes": self.settings.sandbox_runtime_log_bytes_limit,
+            "workspace_bytes": self.settings.sandbox_workspace_bytes_limit,
+            "workspace_files": self.settings.sandbox_workspace_file_limit,
+        }
 
     def _client(self) -> httpx.AsyncClient:
         token = self.token_path.read_text(encoding="utf-8").strip()
@@ -295,6 +343,7 @@ def _runtime_failure_envelope(
     pod_name: str,
     failure_message: str,
     duration_ms: int,
+    runtime_metadata: SandboxRuntimeMetadata | None = None,
 ) -> ToolExecutionEnvelope:
     return ToolExecutionEnvelope(
         execution_id=request.execution_id or f"sbxexec_{uuid4().hex}",
@@ -303,8 +352,11 @@ def _runtime_failure_envelope(
         tool_name=request.tool_name,
         execution_status="failed",
         failure_message=failure_message,
-        runtime=SandboxRuntimeMetadata(
+        runtime=runtime_metadata
+        or SandboxRuntimeMetadata(
             type="sandbox_pod",
+            runtime_profile="kubernetes_container",
+            isolation="container",
             pod_name=pod_name,
             pod_phase="Unknown",
             duration_ms=duration_ms,
@@ -337,6 +389,72 @@ def _kubernetes_api_server() -> str:
 
 def _duration_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
+
+
+def _pod_name_for_execution(execution_id: str) -> str:
+    suffix = execution_id.removeprefix("sbxexec_").lower()
+    suffix = re.sub(r"[^a-z0-9.-]+", "-", suffix).strip("-.")
+    if not suffix:
+        suffix = uuid4().hex
+    suffix = suffix[:20].strip("-.") or uuid4().hex[:20]
+    return f"sandbox-tool-{suffix}"
+
+
+def _workspace_evidence(workspace_path: Path) -> dict[str, object]:
+    try:
+        path = workspace_path.resolve()
+    except OSError:
+        path = workspace_path
+    evidence: dict[str, object] = {"path": str(path)}
+    try:
+        files = [item for item in path.rglob("*") if item.is_file()]
+    except OSError:
+        return evidence
+    total_bytes = 0
+    counted_files = 0
+    for item in files:
+        try:
+            total_bytes += item.stat().st_size
+            counted_files += 1
+        except OSError:
+            continue
+    evidence["file_count"] = counted_files
+    evidence["bytes"] = total_bytes
+    return evidence
+
+
+def _output_evidence(
+    envelope: ToolExecutionEnvelope,
+    logs: str,
+) -> dict[str, object]:
+    output: dict[str, object] = {
+        "runtime_log_bytes": len(logs.encode("utf-8")),
+    }
+    if envelope.tool_result:
+        stdout = envelope.tool_result.data.get("stdout")
+        stderr = envelope.tool_result.data.get("stderr")
+        if isinstance(stdout, str):
+            output["stdout_bytes"] = len(stdout.encode("utf-8"))
+            output["stdout_original_bytes"] = envelope.tool_result.data.get(
+                "stdout_original_bytes",
+                output["stdout_bytes"],
+            )
+            output["stdout_truncated"] = bool(
+                envelope.tool_result.data.get("stdout_truncated")
+            )
+        if isinstance(stderr, str):
+            output["stderr_bytes"] = len(stderr.encode("utf-8"))
+            output["stderr_original_bytes"] = envelope.tool_result.data.get(
+                "stderr_original_bytes",
+                output["stderr_bytes"],
+            )
+            output["stderr_truncated"] = bool(
+                envelope.tool_result.data.get("stderr_truncated")
+            )
+        output_limit = envelope.tool_result.data.get("output_limit_bytes")
+        if isinstance(output_limit, int):
+            output["limit_bytes"] = output_limit
+    return output
 
 
 def _response_detail(response: httpx.Response) -> str:
