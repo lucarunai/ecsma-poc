@@ -66,9 +66,13 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
         *,
         workspace_path: Path,
     ) -> ToolExecutionEnvelope:
-        del workspace_path
         execution_id = request.execution_id or f"sbxexec_{uuid4().hex}"
-        request = request.model_copy(update={"execution_id": execution_id})
+        request = request.model_copy(
+            update={
+                "execution_id": execution_id,
+                "workspace_path": str(workspace_path),
+            }
+        )
         pod_name = f"sandbox-tool-{execution_id.removeprefix('sbxexec_')[:20]}"
         started = time.monotonic()
         async with self._client() as client:
@@ -163,6 +167,7 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
             request.model_dump_json().encode("utf-8")
         ).decode("ascii")
         workspace_mount_path = f"/workspace/{request.run_id}"
+        workspace_sub_path = self._workspace_volume_sub_path(request)
         env: list[dict] = [
             {"name": "SANDBOX_TOOL_REQUEST_B64", "value": request_b64},
             {"name": "SANDBOX_WORKSPACE_PATH", "value": workspace_mount_path},
@@ -190,11 +195,27 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                         "imagePullPolicy": "IfNotPresent",
                         "command": ["python", "-m", "cloud_agent_poc.sandbox_runtime"],
                         "env": env,
+                        "securityContext": {
+                            "runAsNonRoot": True,
+                            "runAsUser": 10001,
+                            "runAsGroup": 10001,
+                            "allowPrivilegeEscalation": False,
+                            "capabilities": {"drop": ["ALL"]},
+                            "seccompProfile": {"type": "RuntimeDefault"},
+                        },
+                        "resources": {
+                            "requests": {"cpu": "100m", "memory": "128Mi"},
+                            "limits": {"cpu": "500m", "memory": "512Mi"},
+                        },
                         "volumeMounts": [
                             {
                                 "name": "workspace",
                                 "mountPath": workspace_mount_path,
-                                "subPath": request.run_id,
+                                "subPath": workspace_sub_path,
+                            },
+                            {
+                                "name": "tmp",
+                                "mountPath": "/tmp",
                             }
                         ],
                     }
@@ -205,10 +226,29 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                         "persistentVolumeClaim": {
                             "claimName": self.settings.sandbox_workspace_claim
                         },
-                    }
+                    },
+                    {
+                        "name": "tmp",
+                        "emptyDir": {},
+                    },
                 ],
             },
         }
+
+    def _workspace_volume_sub_path(self, request: ToolExecutionRequest) -> str:
+        workspace_path = (
+            Path(request.workspace_path)
+            if request.workspace_path
+            else self.settings.workspace_root / request.run_id
+        ).resolve()
+        workspace_root = self.settings.workspace_root.resolve()
+        try:
+            relative_path = workspace_path.relative_to(workspace_root)
+        except ValueError as exc:
+            raise SandboxManagerError("Workspace path escaped sandbox root.") from exc
+        if not relative_path.parts:
+            raise SandboxManagerError("Workspace path must point to a run workspace.")
+        return relative_path.as_posix()
 
     def _client(self) -> httpx.AsyncClient:
         token = self.token_path.read_text(encoding="utf-8").strip()

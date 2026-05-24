@@ -56,25 +56,29 @@ class SandboxPodManifestTests(unittest.TestCase):
     def test_github_token_is_never_injected_into_sandbox_tool_pods(self) -> None:
         runner = object.__new__(KubernetesToolPodRunner)
         runner.settings = _settings(Path("/sandboxes"))
+        run_id = "run_0123456789abcdef0123456789abcdef"
+        workspace_path = f"/sandboxes/users/Luca/{run_id}"
 
         file_manifest = runner._pod_manifest(
             "sandbox-tool-file",
             ToolExecutionRequest(
-                run_id="run_0123456789abcdef0123456789abcdef",
+                run_id=run_id,
                 tool_call_id="toolcall_file",
                 tool_name="read_workspace_file",
                 args={"path": "README.md"},
                 execution_id="sbxexec_file",
+                workspace_path=workspace_path,
             ),
         )
         clone_manifest = runner._pod_manifest(
             "sandbox-tool-clone",
             ToolExecutionRequest(
-                run_id="run_0123456789abcdef0123456789abcdef",
+                run_id=run_id,
                 tool_call_id="toolcall_clone",
                 tool_name="clone_github_repository",
                 args={"repository_url": "https://github.com/lucarunai/demo", "source_branch": "test"},
                 execution_id="sbxexec_clone",
+                workspace_path=workspace_path,
             ),
         )
 
@@ -84,11 +88,11 @@ class SandboxPodManifestTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", [item["name"] for item in clone_env])
         self.assertEqual(
             clone_manifest["spec"]["containers"][0]["volumeMounts"][0]["subPath"],
-            "run_0123456789abcdef0123456789abcdef",
+            f"users/Luca/{run_id}",
         )
         self.assertEqual(
             clone_manifest["spec"]["containers"][0]["volumeMounts"][0]["mountPath"],
-            "/workspace/run_0123456789abcdef0123456789abcdef",
+            f"/workspace/{run_id}",
         )
         workspace_env = {
             item["name"]: item["value"]
@@ -97,7 +101,7 @@ class SandboxPodManifestTests(unittest.TestCase):
         }
         self.assertEqual(
             workspace_env["SANDBOX_WORKSPACE_PATH"],
-            "/workspace/run_0123456789abcdef0123456789abcdef",
+            f"/workspace/{run_id}",
         )
 
     def test_sandbox_tool_pod_disables_service_account_token(self) -> None:
@@ -117,19 +121,61 @@ class SandboxPodManifestTests(unittest.TestCase):
 
         self.assertIs(manifest["spec"]["automountServiceAccountToken"], False)
         self.assertEqual(manifest["spec"]["restartPolicy"], "Never")
+        self.assertEqual(manifest["spec"]["activeDeadlineSeconds"], 180)
 
-    def test_sandbox_tool_request_is_encoded_in_environment(self) -> None:
+    def test_sandbox_tool_pod_has_security_context_resources_and_tmp(self) -> None:
         runner = object.__new__(KubernetesToolPodRunner)
         runner.settings = _settings(Path("/sandboxes"))
 
         manifest = runner._pod_manifest(
-            "sandbox-tool-write",
+            "sandbox-tool-file",
             ToolExecutionRequest(
                 run_id="run_0123456789abcdef0123456789abcdef",
+                tool_call_id="toolcall_file",
+                tool_name="read_workspace_file",
+                args={"path": "README.md"},
+                execution_id="sbxexec_file",
+            ),
+        )
+
+        container = manifest["spec"]["containers"][0]
+        security_context = container["securityContext"]
+        self.assertIs(security_context["runAsNonRoot"], True)
+        self.assertEqual(security_context["runAsUser"], 10001)
+        self.assertEqual(security_context["runAsGroup"], 10001)
+        self.assertIs(security_context["allowPrivilegeEscalation"], False)
+        self.assertEqual(security_context["capabilities"]["drop"], ["ALL"])
+        self.assertEqual(
+            security_context["seccompProfile"],
+            {"type": "RuntimeDefault"},
+        )
+        self.assertEqual(
+            container["resources"],
+            {
+                "requests": {"cpu": "100m", "memory": "128Mi"},
+                "limits": {"cpu": "500m", "memory": "512Mi"},
+            },
+        )
+        mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+        volumes = {volume["name"]: volume for volume in manifest["spec"]["volumes"]}
+        self.assertEqual(mounts["tmp"]["mountPath"], "/tmp")
+        self.assertEqual(volumes["tmp"], {"name": "tmp", "emptyDir": {}})
+
+    def test_sandbox_tool_request_is_encoded_in_environment(self) -> None:
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+        run_id = "run_0123456789abcdef0123456789abcdef"
+        workspace_path = f"/sandboxes/users/Luca/{run_id}"
+
+        manifest = runner._pod_manifest(
+            "sandbox-tool-write",
+            ToolExecutionRequest(
+                run_id=run_id,
                 tool_call_id="toolcall_write",
                 tool_name="write_workspace_file",
                 args={"path": "hello.py", "content": "print('hello')\n"},
                 execution_id="sbxexec_write",
+                workspace_path=workspace_path,
             ),
         )
 
@@ -143,10 +189,28 @@ class SandboxPodManifestTests(unittest.TestCase):
         )
 
         self.assertEqual(decoded_request["tool_name"], "write_workspace_file")
-        self.assertEqual(decoded_request["run_id"], "run_0123456789abcdef0123456789abcdef")
+        self.assertEqual(decoded_request["run_id"], run_id)
+        self.assertEqual(decoded_request["workspace_path"], workspace_path)
         self.assertEqual(decoded_request["args"]["path"], "hello.py")
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_sandbox_tool_pod_rejects_workspace_outside_root(self) -> None:
+        runner = object.__new__(KubernetesToolPodRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+
+        with self.assertRaisesRegex(SandboxManagerError, "escaped sandbox root"):
+            runner._pod_manifest(
+                "sandbox-tool-file",
+                ToolExecutionRequest(
+                    run_id="run_0123456789abcdef0123456789abcdef",
+                    tool_call_id="toolcall_file",
+                    tool_name="read_workspace_file",
+                    args={"path": "README.md"},
+                    execution_id="sbxexec_file",
+                    workspace_path="/tmp/outside/run_0123456789abcdef0123456789abcdef",
+                ),
+            )
 
 
 class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):
