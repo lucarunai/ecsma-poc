@@ -762,18 +762,18 @@ Observability stack = external signal and workflow
 
 ```mermaid
 flowchart LR
-  DB[(Postgres durable state)]
-  Store[Session Store ops queries]
-  Contracts[Ops Contracts<br/>ops_metric_snapshot.v1<br/>ops_alerts.v1<br/>ops_run_summary.v1<br/>support_bundle.v1]
-  Metrics[/metrics<br/>Prometheus text]
-  Logs[Structured JSON Logs]
-  Traces[OpenTelemetry Spans]
-  Collector[OpenTelemetry Collector]
-  Prom[Prometheus]
-  Loki[Loki / log backend]
-  Tempo[Tempo / trace backend]
-  Grafana[Grafana]
-  Alertmanager[Alertmanager]
+  DB[("Postgres durable state")]
+  Store["Session Store ops queries"]
+  Contracts["Ops Contracts<br/>ops_metric_snapshot.v1<br/>ops_alerts.v1<br/>ops_run_summary.v1<br/>support_bundle.v1"]
+  Metrics["/metrics<br/>Prometheus text"]
+  Logs["Structured JSON Logs"]
+  Traces["OpenTelemetry Spans"]
+  Collector["OpenTelemetry Collector"]
+  Prom["Prometheus"]
+  Loki["Loki / log backend"]
+  Tempo["Tempo / trace backend"]
+  Grafana["Grafana"]
+  Alertmanager["Alertmanager"]
 
   DB --> Store
   Store --> Contracts

@@ -52,13 +52,13 @@ Day 2 Operations 需要回答三类问题：
 
 ```mermaid
 flowchart LR
-  DB[(Postgres durable state)]
-  Store[SessionStore ops queries]
-  Ops[cloud_agent_poc.ops pure aggregators]
-  SessionAPI[Session Layer internal API]
-  WebAPI[Web Layer /api proxy]
-  OpsUI[/ops independent dashboard]
-  Script[scripts/k8s-ops-verify-v2.sh]
+  DB[("Postgres durable state")]
+  Store["SessionStore ops queries"]
+  Ops["cloud_agent_poc.ops pure aggregators"]
+  SessionAPI["Session Layer internal API"]
+  WebAPI["Web Layer /api proxy"]
+  OpsUI["/ops independent dashboard"]
+  Script["scripts/k8s-ops-verify-v2.sh"]
 
   DB --> Store
   Store --> Ops
@@ -614,17 +614,17 @@ Alertmanager：主动通知
 
 ```mermaid
 flowchart LR
-  DB[(Postgres durable state)]
-  OpsContracts[Ops contracts<br/>run summary / metrics / alerts / bundle]
-  Metrics[/metrics<br/>Prometheus text]
-  Logs[Structured JSON logs]
-  Traces[OpenTelemetry spans]
-  Collector[OpenTelemetry Collector]
-  Prom[Prometheus]
-  Loki[Loki / log backend]
-  Tempo[Tempo / trace backend]
-  Grafana[Grafana]
-  Alertmanager[Alertmanager]
+  DB[("Postgres durable state")]
+  OpsContracts["Ops contracts<br/>run summary / metrics / alerts / bundle"]
+  Metrics["/metrics<br/>Prometheus text"]
+  Logs["Structured JSON logs"]
+  Traces["OpenTelemetry spans"]
+  Collector["OpenTelemetry Collector"]
+  Prom["Prometheus"]
+  Loki["Loki / log backend"]
+  Tempo["Tempo / trace backend"]
+  Grafana["Grafana"]
+  Alertmanager["Alertmanager"]
 
   DB --> OpsContracts
   OpsContracts --> Metrics
