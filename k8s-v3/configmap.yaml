@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloud-agent-poc-v3-config
+  namespace: cloud-agent-poc-v3
+data:
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ecsma_poc
+  SESSION_LAYER_URL: http://cloud-agent-session:8000
+  SANDBOX_LAYER_URL: http://cloud-agent-sandbox:8000
+  GITHUB_BROKER_URL: http://cloud-agent-github-broker:8000
+  SANDBOX_EXECUTION_MODE: kubernetes
+  SANDBOX_RUNTIME_IMAGE: cloud-agent-poc-v3:local
+  SANDBOX_TOOL_TIMEOUT_SECONDS: "180"
+  SANDBOX_WORKSPACE_CLAIM: sandbox-workspaces
+  SANDBOX_EPHEMERAL_STORAGE_REQUEST: 128Mi
+  SANDBOX_EPHEMERAL_STORAGE_LIMIT: 1Gi
+  SANDBOX_NETWORK_POLICY_NAME: sandbox-tool-default-deny
+  SANDBOX_SESSION_NETWORK_POLICY_NAME: sandbox-session-default-deny
+  SANDBOX_EGRESS_POLICY: default-deny
+  SANDBOX_SESSION_TIMEOUT_SECONDS: "900"
+  SANDBOX_TOOL_OUTPUT_BYTES_LIMIT: "4000"
+  SANDBOX_RUNTIME_LOG_BYTES_LIMIT: "65536"
+  SANDBOX_WORKSPACE_BYTES_LIMIT: "104857600"
+  SANDBOX_WORKSPACE_FILE_LIMIT: "10000"
+  GITHUB_REPO_URL: https://github.com/lucarunai/demo.git
+  GITHUB_SOURCE_BRANCH: test
+  GITHUB_TARGET_BRANCH: main
+  WORKSPACE_ROOT: /sandboxes
+  CLAUDE_CONFIG_DIR: /home/cloudagent/.claude
+  GIT_AUTHOR_NAME: Cloud Agent PoC
+  GIT_AUTHOR_EMAIL: cloud-agent-poc-v3@example.local

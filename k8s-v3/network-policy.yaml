@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-tool-default-deny
+  namespace: cloud-agent-poc-v3
+spec:
+  podSelector:
+    matchLabels:
+      app: cloud-agent-sandbox-tool
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-session-default-deny
+  namespace: cloud-agent-poc-v3
+spec:
+  podSelector:
+    matchLabels:
+      app: cloud-agent-task-sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cloud-agent-sandbox
+      ports:
+        - protocol: TCP
+          port: 8080

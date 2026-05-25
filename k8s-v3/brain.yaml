@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-agent-brain
+  namespace: cloud-agent-poc-v3
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cloud-agent-brain
+  template:
+    metadata:
+      labels:
+        app: cloud-agent-brain
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: brain
+          image: cloud-agent-poc-v3:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - cloud_agent_poc.brain_app:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          envFrom:
+            - configMapRef:
+                name: cloud-agent-poc-v3-config
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CLAUDE_CONFIG_DIR
+              value: /home/cloudagent/.claude/brain/$(POD_NAME)
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloud-agent-poc-v3-secrets
+                  key: ANTHROPIC_API_KEY
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: claude-config
+              mountPath: /home/cloudagent/.claude
+      volumes:
+        - name: claude-config
+          emptyDir: {}
