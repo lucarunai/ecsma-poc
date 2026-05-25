@@ -2,7 +2,7 @@
 
 本文档讨论 Cloud Agent Platform PoC 在 Day 2 Operations 方向的升级方案。这里的 Day 2 不是指初次部署，而是系统已经跑起来之后，如何观察、诊断、支持用户、形成持续改进闭环。
 
-当前先做 plan，不做实现。后续讨论确定范围后，再落地代码并形成 implementation 文档。
+本文档是 Day 2 Operations 的方案文档。已经落地的内容以 `day2-operations-upgrade-implementation.zh.md` 为准；尚未落地的阶段在本文档中作为后续设计路线。
 
 ## 1. 问题定义
 
@@ -731,15 +731,434 @@ Run blocked with recovery context
 
 目标：接入生产常见 observability 栈。
 
-建议后置，不作为当前 PoC 第一阶段：
+Phase 4 的定位不是替代 Session Layer，也不是把所有状态搬到 APM 工具里。当前系统的 source of truth 仍然是 Postgres durable state：
 
-- structured logs。
-- Prometheus metrics endpoint。
-- OpenTelemetry traces。
-- Grafana dashboard。
-- alertmanager。
+- `runs`
+- `tasks`
+- `task_attempts`
+- `task_handoffs`
+- `tool_calls`
+- `tool_executions`
+- `approval_requests`
+- `session_events`
 
-原因：当前最重要的是先定义业务语义和 support contract。APM 工具只是承载，不应该先于数据契约。
+External observability 的职责是把这些事实转成生产常见的运行信号：
+
+- metrics 用于趋势、SLO、alert。
+- logs 用于事件检索和排障细节。
+- traces 用于跨服务链路定位。
+- dashboard 用于持续改进和支持团队查看。
+- alertmanager / paging 用于主动发现问题。
+
+换句话说：
+
+```text
+Postgres durable state = truth
+Ops contracts = product semantics
+Observability stack = external signal and workflow
+```
+
+#### 8.4.1 建议总体架构
+
+```mermaid
+flowchart LR
+  DB[(Postgres durable state)]
+  Store[Session Store ops queries]
+  Contracts[Ops Contracts<br/>ops_metric_snapshot.v1<br/>ops_alerts.v1<br/>ops_run_summary.v1<br/>support_bundle.v1]
+  Metrics[/metrics<br/>Prometheus text]
+  Logs[Structured JSON Logs]
+  Traces[OpenTelemetry Spans]
+  Collector[OpenTelemetry Collector]
+  Prom[Prometheus]
+  Loki[Loki / log backend]
+  Tempo[Tempo / trace backend]
+  Grafana[Grafana]
+  Alertmanager[Alertmanager]
+
+  DB --> Store
+  Store --> Contracts
+  Contracts --> Metrics
+  Metrics --> Prom
+  Logs --> Collector
+  Traces --> Collector
+  Collector --> Loki
+  Collector --> Tempo
+  Prom --> Grafana
+  Loki --> Grafana
+  Tempo --> Grafana
+  Prom --> Alertmanager
+```
+
+注意边界：
+
+- `support_bundle.v1` 仍然来自 DB evidence，不从 Prometheus 反推。
+- replay/audit 仍然来自 `session_events` hash chain，不从 logs 反推。
+- Prometheus 只保存低基数聚合指标，不保存 prompt、tool raw output、run 级大对象。
+- trace/log 可以带 correlation id，但不能带 secret 或完整 prompt。
+
+#### 8.4.2 Metrics：Prometheus Exporter
+
+第一步建议新增：
+
+```text
+GET /metrics
+```
+
+初期可以放在 Session Layer，因为 Session Layer 离 durable state 最近，也已经有 `get_ops_metric_snapshot(...)`。
+
+建议从 `ops_metric_snapshot.v1` 派生 Prometheus text format：
+
+```text
+cloud_agent_runs_total{status="completed"} 2
+cloud_agent_runs_total{status="failed"} 1
+cloud_agent_run_success_rate 0.6667
+cloud_agent_run_failure_rate 0.3333
+
+cloud_agent_tasks_total{status="completed"} 5
+cloud_agent_task_attempts_total{status="completed"} 5
+
+cloud_agent_tool_calls_total{tool_name="git_status",status="succeeded"} 7
+cloud_agent_tool_failures_total{tool_name="run_python_unittest"} 1
+cloud_agent_tool_duration_ms_p95 2200
+
+cloud_agent_approvals_total{status="pending"} 0
+cloud_agent_approval_decision_latency_ms_avg 37271
+
+cloud_agent_replay_drift_total 0
+cloud_agent_replay_hash_chain_invalid_total 0
+
+cloud_agent_brain_lease_expired_total 0
+cloud_agent_resume_requested_total 1
+cloud_agent_orphaned_tool_calls_total 0
+
+cloud_agent_sandbox_output_truncated_total 0
+cloud_agent_sandbox_workspace_bytes_max 0
+```
+
+低基数 label 可以使用：
+
+- `status`
+- `tool_name`
+- `failure_kind`
+- `runtime_profile`
+- `pod_phase`
+- `environment`
+- `namespace`
+
+不要把这些放进 Prometheus label：
+
+- `run_id`
+- `session_id`
+- `task_id`
+- `task_attempt_id`
+- `tool_call_id`
+- `prompt`
+- `workspace_path`
+- raw `user_id`
+
+原因：这些都是高基数字段，会让 Prometheus series 数量爆炸。需要按 id 检索时，用 logs、traces、support bundle。
+
+第一版可以只暴露当前 user scope 之外的 platform-level 聚合，或者 internal-only 的 namespace-level 聚合。因为当前系统已经实现 user-level ownership，后续如果做 multi-tenant production，需要明确 metrics 是否按 tenant/tier 聚合，而不是直接按 raw user_id label。
+
+#### 8.4.3 Structured Logs
+
+建议所有服务输出 JSON logs：
+
+- Web
+- Session
+- Brain
+- Sandbox Manager
+- GitHub Broker
+- one-shot Sandbox tool Pod
+
+每条日志至少包含：
+
+```json
+{
+  "timestamp": "...",
+  "level": "info",
+  "service": "brain",
+  "event": "run.claimed",
+  "run_id": "run_xxx",
+  "task_id": "task_xxx",
+  "task_attempt_id": "taskattempt_xxx",
+  "tool_call_id": null,
+  "trace_id": "...",
+  "span_id": "...",
+  "worker_id": "cloud-agent-brain-xxx",
+  "status": "running"
+}
+```
+
+日志要覆盖的关键事件：
+
+- `session.created`
+- `run.created`
+- `run.claimed`
+- `run.heartbeat`
+- `run.lease.expired`
+- `task.started`
+- `task.completed`
+- `task.failed`
+- `agent.query.started`
+- `agent.query.completed`
+- `tool.call.requested`
+- `tool.execution.started`
+- `tool.execution.completed`
+- `tool.execution.failed`
+- `approval.requested`
+- `approval.approved`
+- `approval.denied`
+- `sandbox.pod.created`
+- `sandbox.pod.completed`
+- `sandbox.pod.failed`
+- `github.broker.requested`
+- `github.broker.completed`
+
+日志中禁止输出：
+
+- raw `GITHUB_TOKEN`
+- raw `ANTHROPIC_API_KEY`
+- authorization headers
+- full prompt
+- full file content
+- full stdout/stderr
+- raw environment variables
+
+日志可以输出：
+
+- prompt hash / preview
+- tool input hash / preview
+- output bytes / truncated flag
+- failure_kind
+- status
+- correlation ids
+
+#### 8.4.4 OpenTelemetry Traces
+
+当前系统天然有跨层链路：
+
+```text
+Web request
+  -> Session API
+  -> Brain Worker
+  -> Agent query
+  -> MCP tool call
+  -> Tool Router
+  -> Sandbox Manager / GitHub Broker
+  -> one-shot Sandbox Pod
+  -> tool result
+  -> Agent result
+  -> handoff
+```
+
+建议 trace 设计：
+
+- `run_id` 是业务 correlation id。
+- `task_attempt_id` 是一次 fresh agent query 的主要 trace root。
+- 每个 tool call 是 child span。
+- sandbox pod execution 是 tool call 的 child span。
+- GitHub Broker call 是 trusted tool span。
+
+建议 span：
+
+```text
+cloud_agent.web.request
+cloud_agent.session.create_run
+cloud_agent.run.claim
+cloud_agent.task_attempt
+cloud_agent.agent_query
+cloud_agent.tool_call
+cloud_agent.sandbox_execution
+cloud_agent.github_broker_call
+cloud_agent.handoff_persist
+cloud_agent.replay_check
+cloud_agent.support_bundle_generate
+```
+
+建议 span attributes：
+
+```text
+run_id
+task_id
+task_attempt_id
+tool_call_id
+tool_name
+failure_kind
+run_status
+task_status
+sandbox_runtime_profile
+pod_phase
+approval_required
+resume_attempt
+user_id_hash
+```
+
+注意：trace attributes 可以带 `run_id` 这种检索字段，但仍然不能带 secret、raw prompt、raw tool output。
+
+#### 8.4.5 Grafana Dashboards
+
+建议先做 4 个 dashboard。
+
+**Platform Health**
+
+- run success rate
+- run failure rate
+- p50/p95 run duration
+- queued/running/resume_queued count
+- task attempt duration
+- model error count
+- replay drift count
+
+**Agent Recovery**
+
+- lease expired count
+- resume requested count
+- resume completed count
+- brain crash count
+- orphaned tool calls
+- task attempt retry count
+- recovery success/failure trend
+
+**Sandbox Runtime**
+
+- sandbox execution count by tool
+- sandbox failure kind distribution
+- pod phase distribution
+- p50/p95 sandbox duration
+- output truncated count
+- workspace bytes max
+- file count max
+- timeout/resource failure trend
+
+**Customer Support**
+
+- failed runs by failure_kind
+- pending approvals
+- approval decision latency
+- support bundle generated count
+- customer-visible bundle redaction failures
+- top failing tools
+- replay/hash chain invalid count
+
+#### 8.4.6 Alertmanager Rules
+
+Phase 3 已经有 `ops_alerts.v1`，Phase 4 可以把这些业务 alert 转成 Prometheus/Alertmanager rules。
+
+建议初始 alerts：
+
+```text
+ReplayDriftDetected
+ReplayHashChainInvalid
+BrainLeaseExpired
+RunFailureRateHigh
+SandboxRuntimeErrorSpike
+ToolFailureRateHigh
+ApprovalPendingTooLong
+ApprovalExpiredSpike
+SandboxOutputTruncatedSpike
+SupportBundleRedactionFailure
+```
+
+要区分两类告警：
+
+| 类型 | 示例 | 处理方式 |
+| --- | --- | --- |
+| Infra alert | pod down、DB unavailable、CPU/memory high | 平台值班处理 |
+| Product alert | replay drift、run failure rate high、approval pending too long | 平台/产品/支持共同处理 |
+
+这个系统更有价值的是 product alert，因为它体现 agent workflow 的业务语义，而不是只看 Kubernetes 是否活着。
+
+#### 8.4.7 建议实施拆分
+
+**Phase 4A：Prometheus Metrics Exporter**
+
+目标：把已有 `ops_metric_snapshot.v1` 暴露成生产常见 metrics format。
+
+建议实现：
+
+1. 新增 metrics 转换模块，例如：
+   - `src/cloud_agent_poc/observability.py`
+   - `render_prometheus_metrics(snapshot: dict) -> str`
+2. Session Layer 新增：
+   - `GET /internal/metrics`
+3. Web 或 internal route 新增：
+   - `GET /metrics`
+4. 加 contract tests：
+   - metrics text 包含关键指标。
+   - metrics text 不包含 `run_id` / `prompt` / secret-looking values。
+   - label names 合法。
+5. 新增 runtime verify：
+   - `scripts/k8s-observability-verify-v2.sh`
+
+**Phase 4B：Structured JSON Logs**
+
+目标：让所有服务日志可被 Loki/CloudWatch/Datadog 检索。
+
+建议实现：
+
+1. 增加统一 logging helper。
+2. 统一字段：
+   - `service`
+   - `event`
+   - `run_id`
+   - `task_id`
+   - `task_attempt_id`
+   - `tool_call_id`
+   - `trace_id`
+   - `failure_kind`
+3. 对 Brain claim、tool execution、sandbox pod lifecycle、approval lifecycle 增加 structured log。
+4. 加 redaction tests。
+
+**Phase 4C：OpenTelemetry Trace Propagation**
+
+目标：可以从一个 run drill down 到 Web -> Session -> Brain -> Tool -> Sandbox/GitHub Broker 的完整链路。
+
+建议实现：
+
+1. 引入 OpenTelemetry SDK。
+2. HTTP server/client 自动 instrumentation。
+3. 手动给 agent query、tool call、sandbox execution、GitHub Broker call 加 span。
+4. 通过 `traceparent` 传播到内部 HTTP calls。
+5. K8s 部署 OpenTelemetry Collector。
+6. 本地先用 debug exporter，后续接 Tempo/Jaeger。
+
+**Phase 4D：Grafana / Alertmanager**
+
+目标：把 metrics/logs/traces 组织成运行视图和告警。
+
+建议实现：
+
+1. 新增 dashboard JSON 或 Helm values。
+2. 新增 alert rules。
+3. `k8s-observability-verify-v2.sh` 验证：
+   - `/metrics` 可 scrape。
+   - collector ready。
+   - dashboard config exists。
+   - alert rule config exists。
+
+#### 8.4.8 Testing Strategy
+
+Phase 4 测试建议：
+
+| 层级 | 测试内容 |
+| --- | --- |
+| Unit | `ops_metric_snapshot.v1` -> Prometheus text 转换 |
+| Contract | `/metrics` 包含 expected metrics，不包含高基数 labels |
+| Redaction | logs/metrics/traces 不含 token、secret、raw prompt |
+| Runtime | v2 环境 curl `/metrics`，Prometheus text parse ok |
+| Trace | 一次 run 产生同一 `trace_id` 的 Session/Brain/Tool spans |
+| Dashboard | dashboard JSON 包含核心 panels |
+| Alert | 构造 replay drift / failure spike fixture，alert rule 能触发 |
+
+#### 8.4.9 暂不实现的原因
+
+当前暂时不实现 Phase 4，原因是：
+
+- Phase 1/2/3 已经覆盖 Day 2 的核心业务语义和 support evidence。
+- External observability 会引入额外组件，容易把 PoC 复杂度拉高。
+- 现在更重要的是让 ops contract 稳定，再接外部系统。
+- Prometheus/OTel/Grafana 是承载层，不应该早于数据语义。
 
 ## 9. 第一阶段推荐范围
 
@@ -748,7 +1167,7 @@ Run blocked with recovery context
 理由：
 
 - 当前系统已经有 durable DB evidence。
-- 面试/系统设计里更重要的是说明“你知道哪些数据能解释 agent 行为”。
+- 系统设计里更重要的是说明“哪些数据能解释 agent 行为”。
 - Support Bundle 能直接回答 customer support 的问题。
 - Ops Summary 能直接支撑 continuous improvement。
 - 实现风险小，不改变 Brain/Sandbox 主链路。
