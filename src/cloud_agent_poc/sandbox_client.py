@@ -176,21 +176,65 @@ class SandboxLayerClient:
         args: dict[str, Any],
         *,
         tool_call_id: str | None = None,
+        task_attempt_id: str | None = None,
         workspace_path: str | None = None,
+        sandbox_session_id: str | None = None,
+        sandbox_scope: str | None = None,
+        runtime_policy: str | None = None,
+        policy_reason: str | None = None,
     ) -> ToolExecutionEnvelope:
+        path = (
+            f"/internal/sandbox-sessions/{sandbox_session_id}/tool-executions"
+            if sandbox_session_id
+            else "/internal/tool-executions"
+        )
         payload = await self._request(
             "POST",
-            "/internal/tool-executions",
+            path,
             json={
                 "run_id": run_id,
                 "tool_call_id": tool_call_id or f"toolcall_{uuid4().hex}",
                 "tool_name": tool_name,
                 "args": args,
+                "task_attempt_id": task_attempt_id,
                 "workspace_path": workspace_path,
+                "sandbox_session_id": sandbox_session_id,
+                "sandbox_scope": sandbox_scope,
+                "runtime_policy": runtime_policy,
+                "policy_reason": policy_reason,
             },
         )
         envelope = ToolExecutionEnvelope.model_validate(payload)
         return envelope
+
+    async def create_sandbox_session(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        task_attempt_id: str,
+        sandbox_session_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/internal/sandbox-sessions",
+            json={
+                "run_id": run_id,
+                "task_id": task_id,
+                "task_attempt_id": task_attempt_id,
+                "sandbox_session_id": sandbox_session_id,
+                "workspace_path": workspace_path,
+                "scope": "task_attempt",
+                "runtime_policy": "task_attempt_sandbox",
+            },
+        )
+
+    async def close_sandbox_session(self, sandbox_session_id: str) -> dict[str, Any]:
+        return await self._request(
+            "DELETE",
+            f"/internal/sandbox-sessions/{sandbox_session_id}",
+        )
 
     async def _execute_tool_data(
         self,

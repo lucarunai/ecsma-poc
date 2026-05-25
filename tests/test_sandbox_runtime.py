@@ -7,8 +7,15 @@ from pathlib import Path
 
 from cloud_agent_poc.brain.processes import CommandResult
 from cloud_agent_poc.config import Settings
-from cloud_agent_poc.sandbox_manager import KubernetesToolPodRunner, SandboxManagerError
-from cloud_agent_poc.sandbox_protocol import ToolExecutionRequest
+from cloud_agent_poc.sandbox_manager import (
+    KubernetesTaskSandboxSessionRunner,
+    KubernetesToolPodRunner,
+    SandboxManagerError,
+)
+from cloud_agent_poc.sandbox_protocol import (
+    SandboxSessionCreateRequest,
+    ToolExecutionRequest,
+)
 from cloud_agent_poc.sandbox_runtime import execute_runtime_request
 from cloud_agent_poc.sandbox_tools import _command_data
 
@@ -295,6 +302,58 @@ class SandboxPodManifestTests(unittest.TestCase):
                     workspace_path="/tmp/outside/run_0123456789abcdef0123456789abcdef",
                 ),
             )
+
+    def test_task_sandbox_session_pod_has_daemon_contract(self) -> None:
+        runner = object.__new__(KubernetesTaskSandboxSessionRunner)
+        runner.settings = _settings(Path("/sandboxes"))
+        run_id = "run_0123456789abcdef0123456789abcdef"
+
+        manifest = runner._pod_manifest(
+            "sandbox-task-session",
+            SandboxSessionCreateRequest(
+                sandbox_session_id="sbxsess_0123456789abcdef0123456789abcdef",
+                run_id=run_id,
+                task_id="task_test",
+                task_attempt_id="taskattempt_test",
+                workspace_path=f"/sandboxes/users/Luca/{run_id}",
+            ),
+        )
+
+        metadata = manifest["metadata"]
+        spec = manifest["spec"]
+        container = spec["containers"][0]
+        env = {
+            item["name"]: item["value"]
+            for item in container["env"]
+            if "value" in item
+        }
+        self.assertEqual(metadata["labels"]["app"], "cloud-agent-task-sandbox")
+        self.assertEqual(
+            metadata["labels"]["cloud-agent-sandbox-session-id"],
+            "sbxsess_0123456789abcdef0123456789abcdef",
+        )
+        self.assertIs(spec["automountServiceAccountToken"], False)
+        self.assertEqual(spec["activeDeadlineSeconds"], 900)
+        self.assertEqual(
+            container["command"],
+            [
+                "uvicorn",
+                "cloud_agent_poc.sandbox_daemon:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8080",
+            ],
+        )
+        self.assertEqual(env["SANDBOX_WORKSPACE_PATH"], f"/workspace/{run_id}")
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(
+            container["volumeMounts"][0]["subPath"],
+            f"users/Luca/{run_id}",
+        )
+        self.assertEqual(container["securityContext"]["runAsUser"], 10001)
+        self.assertEqual(container["resources"]["limits"]["memory"], "512Mi")
 
 
 class SandboxKubernetesRunnerTests(unittest.IsolatedAsyncioTestCase):

@@ -12,8 +12,23 @@ class ToolExecutionRequest(BaseModel):
     tool_call_id: str
     tool_name: str
     args: dict[str, Any] = Field(default_factory=dict)
+    task_attempt_id: str | None = None
     workspace_path: str | None = None
     execution_id: str | None = None
+    sandbox_session_id: str | None = None
+    sandbox_scope: str | None = None
+    runtime_policy: str | None = None
+    policy_reason: str | None = None
+
+
+class SandboxSessionCreateRequest(BaseModel):
+    run_id: str
+    task_id: str | None = None
+    task_attempt_id: str
+    workspace_path: str | None = None
+    sandbox_session_id: str | None = None
+    scope: str = "task_attempt"
+    runtime_policy: str = "task_attempt_sandbox"
 
 
 class SandboxToolResult(BaseModel):
@@ -31,6 +46,10 @@ class SandboxRuntimeMetadata(BaseModel):
     pod_phase: str | None = None
     exit_code: int | None = None
     duration_ms: int | None = None
+    sandbox_session_id: str | None = None
+    sandbox_scope: str | None = None
+    runtime_policy: str | None = None
+    policy_reason: str | None = None
     network_policy: str | None = None
     egress_policy: str | None = None
     resource_limits: dict[str, Any] = Field(default_factory=dict)

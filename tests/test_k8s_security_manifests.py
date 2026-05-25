@@ -113,7 +113,12 @@ class KubernetesSecurityManifestTests(unittest.TestCase):
         self.assertIn("SANDBOX_EPHEMERAL_STORAGE_REQUEST: 128Mi", configmap)
         self.assertIn("SANDBOX_EPHEMERAL_STORAGE_LIMIT: 1Gi", configmap)
         self.assertIn("SANDBOX_NETWORK_POLICY_NAME: sandbox-tool-default-deny", configmap)
+        self.assertIn(
+            "SANDBOX_SESSION_NETWORK_POLICY_NAME: sandbox-session-default-deny",
+            configmap,
+        )
         self.assertIn("SANDBOX_EGRESS_POLICY: default-deny", configmap)
+        self.assertIn('SANDBOX_SESSION_TIMEOUT_SECONDS: "900"', configmap)
         self.assertIn('SANDBOX_TOOL_OUTPUT_BYTES_LIMIT: "4000"', configmap)
         self.assertIn('SANDBOX_RUNTIME_LOG_BYTES_LIMIT: "65536"', configmap)
         self.assertIn('SANDBOX_WORKSPACE_BYTES_LIMIT: "104857600"', configmap)
@@ -133,6 +138,14 @@ class KubernetesSecurityManifestTests(unittest.TestCase):
         self.assertNotIn("ipBlock:", network_policy)
         self.assertNotIn("namespaceSelector:", network_policy)
         self.assertNotIn("podSelector: {}", network_policy)
+
+    def test_v2_task_sandbox_session_network_policy_allows_only_manager_ingress(self) -> None:
+        network_policy = Path("k8s-v2/network-policy.yaml").read_text()
+
+        self.assertIn("name: sandbox-session-default-deny", network_policy)
+        self.assertIn("app: cloud-agent-task-sandbox", network_policy)
+        self.assertIn("app: cloud-agent-sandbox", network_policy)
+        self.assertIn("port: 8080", network_policy)
 
 
 def _container_block(manifest: str, container_name: str) -> str:

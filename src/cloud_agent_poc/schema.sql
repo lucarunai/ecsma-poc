@@ -188,6 +188,24 @@ ALTER TABLE task_attempts
 ALTER TABLE task_attempts
     ADD COLUMN IF NOT EXISTS heartbeat_expires_at TIMESTAMPTZ;
 
+CREATE TABLE IF NOT EXISTS sandbox_sessions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    runtime_profile TEXT,
+    pod_name TEXT,
+    workspace_path TEXT,
+    failure_kind TEXT,
+    failure_reason TEXT,
+    last_heartbeat_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS tool_calls (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -229,6 +247,7 @@ CREATE TABLE IF NOT EXISTS tool_executions (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     task_attempt_id TEXT REFERENCES task_attempts(id) ON DELETE SET NULL,
+    sandbox_session_id TEXT REFERENCES sandbox_sessions(id) ON DELETE SET NULL,
     tool_call_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     execution_status TEXT NOT NULL,
@@ -243,6 +262,10 @@ ALTER TABLE tool_executions
 
 ALTER TABLE tool_executions
     ADD COLUMN IF NOT EXISTS failure_kind TEXT;
+
+ALTER TABLE tool_executions
+    ADD COLUMN IF NOT EXISTS sandbox_session_id TEXT
+    REFERENCES sandbox_sessions(id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
     ON session_events (session_id, id);
@@ -294,6 +317,15 @@ CREATE INDEX IF NOT EXISTS task_attempts_heartbeat_expires_at_idx
     ON task_attempts (heartbeat_expires_at)
     WHERE status = 'running';
 
+CREATE INDEX IF NOT EXISTS sandbox_sessions_run_id_created_at_idx
+    ON sandbox_sessions (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS sandbox_sessions_task_attempt_id_idx
+    ON sandbox_sessions (task_attempt_id);
+
+CREATE INDEX IF NOT EXISTS sandbox_sessions_status_expires_at_idx
+    ON sandbox_sessions (status, expires_at);
+
 CREATE INDEX IF NOT EXISTS tool_calls_task_id_created_at_idx
     ON tool_calls (task_id, created_at);
 
@@ -314,3 +346,6 @@ CREATE INDEX IF NOT EXISTS tool_executions_task_id_created_at_idx
 
 CREATE INDEX IF NOT EXISTS tool_executions_run_id_created_at_idx
     ON tool_executions (run_id, created_at);
+
+CREATE INDEX IF NOT EXISTS tool_executions_sandbox_session_id_idx
+    ON tool_executions (sandbox_session_id);

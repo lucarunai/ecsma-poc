@@ -10,13 +10,22 @@ from pydantic import BaseModel
 from .brain.github_workflow import GitHubWorkflowService
 from .config import Settings
 from .ownership import DEFAULT_USER_ID, normalize_user_id
-from .sandbox_manager import SandboxManagerError, create_tool_execution_runner
-from .sandbox_protocol import ToolExecutionEnvelope, ToolExecutionRequest
+from .sandbox_manager import (
+    SandboxManagerError,
+    create_sandbox_session_runner,
+    create_tool_execution_runner,
+)
+from .sandbox_protocol import (
+    SandboxSessionCreateRequest,
+    ToolExecutionEnvelope,
+    ToolExecutionRequest,
+)
 
 
 settings = Settings.from_env()
 workspaces = GitHubWorkflowService(settings)
 runner = create_tool_execution_runner(settings)
+session_runner = create_sandbox_session_runner(settings)
 app = FastAPI(title="Cloud Agent PoC Sandbox Manager")
 
 
@@ -72,6 +81,49 @@ async def execute_tool(request: ToolExecutionRequest) -> ToolExecutionEnvelope:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/internal/sandbox-sessions")
+async def create_sandbox_session(
+    request: SandboxSessionCreateRequest,
+) -> dict[str, object]:
+    _validate_run_id(request.run_id)
+    workspace_path = _workspace_path_from_string(request.workspace_path) if (
+        request.workspace_path
+    ) else _workspace_root(request.run_id)
+    try:
+        return await session_runner.create_session(
+            request,
+            workspace_path=workspace_path,
+        )
+    except SandboxManagerError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/internal/sandbox-sessions/{session_id}/tool-executions")
+async def execute_tool_in_sandbox_session(
+    session_id: str,
+    request: ToolExecutionRequest,
+) -> ToolExecutionEnvelope:
+    _validate_sandbox_session_id(session_id)
+    workspace_path = _workspace_path_from_request(request)
+    try:
+        return await session_runner.execute(
+            session_id,
+            request,
+            workspace_path=workspace_path,
+        )
+    except SandboxManagerError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/internal/sandbox-sessions/{session_id}")
+async def close_sandbox_session(session_id: str) -> dict[str, object]:
+    _validate_sandbox_session_id(session_id)
+    try:
+        return await session_runner.close_session(session_id)
+    except SandboxManagerError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 def _workspace_root(run_id: str) -> Path:
     workspace_root = _workspace_path(run_id)
     if not workspace_root.exists() or not workspace_root.is_dir():
@@ -107,3 +159,8 @@ def _workspace_path_from_string(workspace_path: str) -> Path:
 def _validate_run_id(run_id: str) -> None:
     if not re.match(r"^run_[a-f0-9]{32}$", run_id):
         raise HTTPException(status_code=400, detail="Run id is not valid.")
+
+
+def _validate_sandbox_session_id(session_id: str) -> None:
+    if not re.match(r"^sbxsess_[a-f0-9]{32}$", session_id):
+        raise HTTPException(status_code=400, detail="Sandbox session id is not valid.")

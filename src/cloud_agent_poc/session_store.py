@@ -338,6 +338,22 @@ class PostgresSessionStore:
                         (run["id"],),
                     )
                     run["expired_approvals"] = await expired_approval_cursor.fetchall()
+                    sandbox_cursor = await conn.execute(
+                        """
+                        UPDATE sandbox_sessions
+                        SET status = 'abandoned',
+                            failure_kind = %s,
+                            failure_reason = 'Run lease expired before Brain heartbeat.',
+                            closed_at = NOW()
+                        WHERE run_id = %s
+                          AND status = 'running'
+                        RETURNING id, task_id, task_attempt_id, pod_name
+                        """,
+                        (FAILURE_KIND_BRAIN_CRASH, run["id"]),
+                    )
+                    run["abandoned_sandbox_sessions"] = (
+                        await sandbox_cursor.fetchall()
+                    )
         return [dict(run) for run in expired_runs]
 
     async def update_run(
@@ -551,6 +567,83 @@ class PostgresSessionStore:
                     failure_reason,
                     ended,
                     attempt_id,
+                ),
+            )
+
+    async def create_sandbox_session(
+        self,
+        *,
+        sandbox_session_id: str,
+        run_id: str,
+        task_id: str | None,
+        task_attempt_id: str,
+        scope: str,
+        status: str,
+        runtime_profile: str | None = None,
+        pod_name: str | None = None,
+        workspace_path: str | None = None,
+        ttl_seconds: int = 900,
+    ) -> str:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                INSERT INTO sandbox_sessions
+                    (id, run_id, task_id, task_attempt_id, scope, status,
+                     runtime_profile, pod_name, workspace_path, last_heartbeat_at,
+                     expires_at)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
+                     NOW() + (%s * INTERVAL '1 second'))
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    runtime_profile = EXCLUDED.runtime_profile,
+                    pod_name = EXCLUDED.pod_name,
+                    workspace_path = EXCLUDED.workspace_path,
+                    last_heartbeat_at = NOW(),
+                    expires_at = EXCLUDED.expires_at
+                """,
+                (
+                    sandbox_session_id,
+                    run_id,
+                    task_id,
+                    task_attempt_id,
+                    scope,
+                    status,
+                    runtime_profile,
+                    pod_name,
+                    workspace_path,
+                    ttl_seconds,
+                ),
+            )
+        return sandbox_session_id
+
+    async def update_sandbox_session(
+        self,
+        sandbox_session_id: str,
+        status: str,
+        *,
+        failure_kind: str | None = None,
+        failure_reason: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
+            await conn.execute(
+                """
+                UPDATE sandbox_sessions
+                SET status = %s,
+                    failure_kind = COALESCE(%s, failure_kind),
+                    failure_reason = COALESCE(%s, failure_reason),
+                    last_heartbeat_at = NOW(),
+                    closed_at = CASE WHEN %s THEN NOW() ELSE closed_at END
+                WHERE id = %s
+                """,
+                (
+                    status,
+                    failure_kind,
+                    failure_reason,
+                    closed,
+                    sandbox_session_id,
                 ),
             )
 
@@ -942,15 +1035,30 @@ class PostgresSessionStore:
                 """,
                 (run_id,),
             )
+            sandbox_cursor = await conn.execute(
+                """
+                SELECT id, run_id, task_id, task_attempt_id, scope, status,
+                       runtime_profile, pod_name, workspace_path, failure_kind,
+                       failure_reason, last_heartbeat_at, expires_at, closed_at,
+                       created_at
+                FROM sandbox_sessions
+                WHERE run_id = %s
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                (run_id,),
+            )
             attempts = await attempt_cursor.fetchall()
             tool_calls = await tool_cursor.fetchall()
             handoffs = await handoff_cursor.fetchall()
+            sandbox_sessions = await sandbox_cursor.fetchall()
         return {
             "run": run,
             "tasks": [task.__dict__ for task in tasks],
             "task_attempts": attempts,
             "tool_calls": tool_calls,
             "task_handoffs": handoffs,
+            "sandbox_sessions": sandbox_sessions,
         }
 
     async def append_event(
@@ -1173,8 +1281,8 @@ class PostgresSessionStore:
             execution_cursor = await conn.execute(
                 """
                 SELECT execution_id, run_id, task_id, task_attempt_id,
-                       tool_call_id, tool_name, execution_status, failure_kind,
-                       envelope, created_at
+                       sandbox_session_id, tool_call_id, tool_name,
+                       execution_status, failure_kind, envelope, created_at
                 FROM tool_executions
                 WHERE run_id = ANY(%s::text[])
                 ORDER BY created_at ASC
@@ -1280,8 +1388,9 @@ class PostgresSessionStore:
             )
             execution_cursor = await conn.execute(
                 """
-                SELECT execution_id, run_id, task_id, task_attempt_id, tool_call_id,
-                       tool_name, execution_status, failure_kind, envelope, created_at
+                SELECT execution_id, run_id, task_id, task_attempt_id,
+                       sandbox_session_id, tool_call_id, tool_name,
+                       execution_status, failure_kind, envelope, created_at
                 FROM tool_executions
                 WHERE run_id = %s
                 ORDER BY created_at ASC
@@ -1473,20 +1582,24 @@ class PostgresSessionStore:
     ) -> str:
         validate_tool_execution_envelope(envelope)
         execution_id = str(envelope["execution_id"])
+        runtime = envelope.get("runtime") or {}
+        sandbox_session_id = runtime.get("sandbox_session_id")
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
             await conn.execute(
                 """
                 INSERT INTO tool_executions
-                    (execution_id, run_id, task_id, task_attempt_id, tool_call_id,
-                     tool_name, execution_status, failure_kind, envelope)
+                    (execution_id, run_id, task_id, task_attempt_id,
+                     sandbox_session_id, tool_call_id, tool_name, execution_status,
+                     failure_kind, envelope)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
                 (
                     execution_id,
                     run_id,
                     task_id,
                     task_attempt_id,
+                    sandbox_session_id,
                     envelope["tool_call_id"],
                     envelope["tool_name"],
                     envelope["execution_status"],

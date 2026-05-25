@@ -240,6 +240,60 @@ class SessionLayerClient:
             )
             response.raise_for_status()
 
+    async def create_sandbox_session(
+        self,
+        *,
+        sandbox_session_id: str,
+        run_id: str,
+        task_id: str | None,
+        task_attempt_id: str,
+        scope: str,
+        status: str,
+        runtime_profile: str | None = None,
+        pod_name: str | None = None,
+        workspace_path: str | None = None,
+        ttl_seconds: int = 900,
+    ) -> str:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.post(
+                "/internal/sandbox-sessions",
+                json={
+                    "sandbox_session_id": sandbox_session_id,
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "task_attempt_id": task_attempt_id,
+                    "scope": scope,
+                    "status": status,
+                    "runtime_profile": runtime_profile,
+                    "pod_name": pod_name,
+                    "workspace_path": workspace_path,
+                    "ttl_seconds": ttl_seconds,
+                },
+            )
+            response.raise_for_status()
+            return str(response.json()["sandbox_session_id"])
+
+    async def update_sandbox_session(
+        self,
+        sandbox_session_id: str,
+        status: str,
+        *,
+        failure_kind: str | None = None,
+        failure_reason: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.patch(
+                f"/internal/sandbox-sessions/{sandbox_session_id}",
+                json={
+                    "status": status,
+                    "failure_kind": failure_kind,
+                    "failure_reason": failure_reason,
+                    "closed": closed,
+                },
+            )
+            response.raise_for_status()
+
     async def create_tool_call(
         self,
         *,

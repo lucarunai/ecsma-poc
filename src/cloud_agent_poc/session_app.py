@@ -146,6 +146,26 @@ class ToolExecutionCreateRequest(BaseModel):
     envelope: dict[str, Any]
 
 
+class SandboxSessionCreateRequest(BaseModel):
+    sandbox_session_id: str
+    run_id: str
+    task_id: str | None = None
+    task_attempt_id: str
+    scope: str = "task_attempt"
+    status: str
+    runtime_profile: str | None = None
+    pod_name: str | None = None
+    workspace_path: str | None = None
+    ttl_seconds: int = Field(default=900, ge=5, le=86400)
+
+
+class SandboxSessionUpdateRequest(BaseModel):
+    status: str
+    failure_kind: str | None = Field(default=None, max_length=100)
+    failure_reason: str | None = None
+    closed: bool = False
+
+
 class RetentionArchiveResponse(BaseModel):
     runs_archived: int
     sessions_archived: int
@@ -520,6 +540,38 @@ async def update_task_attempt(
         failure_kind=body.failure_kind,
         failure_reason=body.failure_reason,
         ended=body.ended,
+    )
+    return {"status": "ok"}
+
+
+@app.post("/internal/sandbox-sessions")
+async def create_sandbox_session(body: SandboxSessionCreateRequest) -> dict[str, str]:
+    sandbox_session_id = await store.create_sandbox_session(
+        sandbox_session_id=body.sandbox_session_id,
+        run_id=body.run_id,
+        task_id=body.task_id,
+        task_attempt_id=body.task_attempt_id,
+        scope=body.scope,
+        status=body.status,
+        runtime_profile=body.runtime_profile,
+        pod_name=body.pod_name,
+        workspace_path=body.workspace_path,
+        ttl_seconds=body.ttl_seconds,
+    )
+    return {"sandbox_session_id": sandbox_session_id}
+
+
+@app.patch("/internal/sandbox-sessions/{sandbox_session_id}")
+async def update_sandbox_session(
+    sandbox_session_id: str,
+    body: SandboxSessionUpdateRequest,
+) -> dict[str, str]:
+    await store.update_sandbox_session(
+        sandbox_session_id,
+        body.status,
+        failure_kind=body.failure_kind,
+        failure_reason=body.failure_reason,
+        closed=body.closed,
     )
     return {"status": "ok"}
 

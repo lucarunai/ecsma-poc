@@ -5,6 +5,7 @@ import inspect
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from ..domain import AgentTaskResult, SessionEvent, TaskRecord, Workspace
 from ..session_contracts import (
@@ -209,6 +210,7 @@ class RunOrchestrator:
         )
         await self.store.update_task(task.id, "running", started=True)
         await self._emit_task(session_id, run_id, task, "task.started")
+        sandbox_session_id: str | None = None
 
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
             await self._emit(
@@ -227,10 +229,18 @@ class RunOrchestrator:
             )
 
         try:
+            sandbox_session_id = await self._start_task_sandbox_session(
+                session_id=session_id,
+                run_id=run_id,
+                task=task,
+                task_attempt_id=attempt.id,
+                workspace=workspace,
+            )
             implementation_kwargs = {
                 "prompt": prompt,
                 "task": task,
                 "task_attempt_id": attempt.id,
+                "sandbox_session_id": sandbox_session_id,
                 "handoffs": handoffs,
                 "run_acceptance_criteria": run_acceptance_criteria,
                 "recovery_context": recovery_context,
@@ -249,6 +259,14 @@ class RunOrchestrator:
                 ended=True,
             )
             raise
+        finally:
+            if sandbox_session_id:
+                await self._close_task_sandbox_session(
+                    session_id=session_id,
+                    run_id=run_id,
+                    task=task,
+                    sandbox_session_id=sandbox_session_id,
+                )
 
         await self.store.update_task(
             task.id,
@@ -307,6 +325,127 @@ class RunOrchestrator:
         if result.status == "failed":
             raise RuntimeError(f"Task {task.seq} failed: {result.summary}")
         return result
+
+    async def _start_task_sandbox_session(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        task: TaskRecord,
+        task_attempt_id: str,
+        workspace: Workspace,
+    ) -> str | None:
+        create_sandbox_session = getattr(self.sandbox, "create_sandbox_session", None)
+        if create_sandbox_session is None:
+            return None
+        sandbox_session_id = f"sbxsess_{uuid4().hex}"
+        session = await create_sandbox_session(
+            run_id=run_id,
+            task_id=task.id,
+            task_attempt_id=task_attempt_id,
+            sandbox_session_id=sandbox_session_id,
+            workspace_path=workspace.path,
+        )
+        sandbox_session_id = str(
+            session.get("sandbox_session_id") or sandbox_session_id
+        )
+        try:
+            create_store_session = getattr(self.store, "create_sandbox_session", None)
+            if create_store_session is not None:
+                await create_store_session(
+                    sandbox_session_id=sandbox_session_id,
+                    run_id=run_id,
+                    task_id=task.id,
+                    task_attempt_id=task_attempt_id,
+                    scope=str(session.get("scope") or "task_attempt"),
+                    status=str(session.get("status") or "running"),
+                    runtime_profile=session.get("runtime_profile"),
+                    pod_name=session.get("pod_name"),
+                    workspace_path=session.get("workspace_path") or workspace.path,
+                )
+            await self._emit(
+                session_id=session_id,
+                run_id=run_id,
+                task_id=task.id,
+                event_type="sandbox.session.started",
+                payload={
+                    "run_id": run_id,
+                    "task_id": task.id,
+                    "task_attempt_id": task_attempt_id,
+                    "sandbox_session_id": sandbox_session_id,
+                    "scope": session.get("scope") or "task_attempt",
+                    "runtime_profile": session.get("runtime_profile"),
+                    "pod_name": session.get("pod_name"),
+                },
+            )
+        except Exception:
+            close_sandbox_session = getattr(self.sandbox, "close_sandbox_session", None)
+            if close_sandbox_session is not None:
+                try:
+                    await close_sandbox_session(sandbox_session_id)
+                except Exception:
+                    pass
+            raise
+        return sandbox_session_id
+
+    async def _close_task_sandbox_session(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        task: TaskRecord,
+        sandbox_session_id: str,
+    ) -> None:
+        try:
+            close_sandbox_session = getattr(self.sandbox, "close_sandbox_session")
+            result = await close_sandbox_session(sandbox_session_id)
+        except Exception as exc:
+            update_store_session = getattr(self.store, "update_sandbox_session", None)
+            try:
+                if update_store_session is not None:
+                    await update_store_session(
+                        sandbox_session_id,
+                        "close_failed",
+                        failure_kind="sandbox_session_cleanup_error",
+                        failure_reason=str(exc),
+                    )
+                await self._emit(
+                    session_id=session_id,
+                    run_id=run_id,
+                    task_id=task.id,
+                    event_type="sandbox.session.close_failed",
+                    payload={
+                        "run_id": run_id,
+                        "task_id": task.id,
+                        "sandbox_session_id": sandbox_session_id,
+                        "error": str(exc),
+                    },
+                )
+            except Exception:
+                pass
+            return
+        update_store_session = getattr(self.store, "update_sandbox_session", None)
+        try:
+            if update_store_session is not None:
+                await update_store_session(
+                    sandbox_session_id,
+                    str(result.get("status") or "closed"),
+                    closed=True,
+                )
+            await self._emit(
+                session_id=session_id,
+                run_id=run_id,
+                task_id=task.id,
+                event_type="sandbox.session.closed",
+                payload={
+                    "run_id": run_id,
+                    "task_id": task.id,
+                    "sandbox_session_id": sandbox_session_id,
+                    "status": result.get("status") or "closed",
+                },
+            )
+        except Exception:
+            pass
 
     async def _workspace_for_run(
         self,

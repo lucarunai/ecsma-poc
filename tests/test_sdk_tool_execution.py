@@ -13,9 +13,11 @@ from cloud_agent_poc.sandbox_protocol import (
 class SandboxStub:
     def __init__(self) -> None:
         self.executed_tools = []
+        self.execution_kwargs = []
 
-    async def execute_tool(self, run_id, tool_name, args, **_):
+    async def execute_tool(self, run_id, tool_name, args, **kwargs):
         self.executed_tools.append(tool_name)
+        self.execution_kwargs.append(kwargs)
         return ToolExecutionEnvelope(
             execution_id="sbxexec_test",
             run_id=run_id,
@@ -32,6 +34,9 @@ class SandboxStub:
                 pod_phase="Succeeded",
                 exit_code=0,
                 duration_ms=12,
+                sandbox_session_id=kwargs.get("sandbox_session_id"),
+                runtime_policy=kwargs.get("runtime_policy"),
+                policy_reason=kwargs.get("policy_reason"),
             ),
         )
 
@@ -39,9 +44,11 @@ class SandboxStub:
 class BrokerStub:
     def __init__(self) -> None:
         self.executed_tools = []
+        self.execution_kwargs = []
 
-    async def execute_tool(self, run_id, tool_name, args, **_):
+    async def execute_tool(self, run_id, tool_name, args, **kwargs):
         self.executed_tools.append(tool_name)
+        self.execution_kwargs.append(kwargs)
         return ToolExecutionEnvelope(
             execution_id="sbxexec_broker",
             run_id=run_id,
@@ -56,6 +63,8 @@ class BrokerStub:
             runtime=SandboxRuntimeMetadata(
                 type="trusted_github_executor",
                 duration_ms=10,
+                runtime_policy=kwargs.get("runtime_policy"),
+                policy_reason=kwargs.get("policy_reason"),
             ),
         )
 
@@ -272,6 +281,92 @@ class CodingToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             store.calls[0]["envelope"]["runtime"]["type"],
             "trusted_github_executor",
+        )
+        self.assertEqual(broker.execution_kwargs[0]["runtime_policy"], "broker_only")
+
+    async def test_workspace_tool_uses_task_attempt_sandbox_when_session_exists(self) -> None:
+        store = StoreStub()
+        events = []
+        sandbox = SandboxStub()
+        factory = CodingToolServerFactory(sandbox, BrokerStub(), store)
+        task = TaskRecord(
+            id="task_test",
+            run_id="run_0123456789abcdef0123456789abcdef",
+            seq=1,
+            kind="model_task",
+            title="Read",
+            description="Read a file.",
+            acceptance_criteria=[],
+            status="running",
+        )
+
+        async def emit(event_type, payload):
+            events.append((event_type, payload))
+
+        envelope = await factory._execute_tool(
+            task.run_id,
+            task,
+            emit,
+            "read_workspace_file",
+            {"path": "README.md"},
+            task_attempt_id="attempt_test",
+            sandbox_session_id="sbxsess_0123456789abcdef0123456789abcdef",
+        )
+
+        self.assertEqual(
+            sandbox.execution_kwargs[0]["sandbox_session_id"],
+            "sbxsess_0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(
+            sandbox.execution_kwargs[0]["runtime_policy"],
+            "task_attempt_sandbox",
+        )
+        self.assertEqual(
+            envelope.runtime.sandbox_session_id,
+            "sbxsess_0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(
+            store.calls[0]["envelope"]["runtime"]["runtime_policy"],
+            "task_attempt_sandbox",
+        )
+        self.assertEqual(events[0][1]["runtime_policy"], "task_attempt_sandbox")
+
+    async def test_clean_room_tool_input_forces_one_shot_sandbox(self) -> None:
+        store = StoreStub()
+        sandbox = SandboxStub()
+        factory = CodingToolServerFactory(sandbox, BrokerStub(), store)
+        task = TaskRecord(
+            id="task_test",
+            run_id="run_0123456789abcdef0123456789abcdef",
+            seq=1,
+            kind="model_task",
+            title="Read",
+            description="Read a file.",
+            acceptance_criteria=[],
+            status="running",
+        )
+
+        async def emit(_event_type, _payload):
+            return None
+
+        await factory._execute_tool(
+            task.run_id,
+            task,
+            emit,
+            "read_workspace_file",
+            {"path": "README.md", "clean_room": True},
+            task_attempt_id="attempt_test",
+            sandbox_session_id="sbxsess_0123456789abcdef0123456789abcdef",
+        )
+
+        self.assertIsNone(sandbox.execution_kwargs[0]["sandbox_session_id"])
+        self.assertEqual(
+            sandbox.execution_kwargs[0]["runtime_policy"],
+            "tool_execution_sandbox",
+        )
+        self.assertEqual(
+            store.calls[0]["envelope"]["runtime"]["runtime_policy"],
+            "tool_execution_sandbox",
         )
 
     async def test_tool_error_is_recorded_before_returning_to_agent(self) -> None:

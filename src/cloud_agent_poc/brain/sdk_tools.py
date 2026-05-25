@@ -13,6 +13,7 @@ from ..tool_policy import (
     TRUSTED_GITHUB_TOOLS,
     approval_reason_for_tool,
     requires_human_approval,
+    resolve_runtime_policy,
 )
 
 EmitToolEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -40,6 +41,8 @@ class CodingToolServerFactory:
         task_attempt_id: str,
         emit: EmitToolEvent,
         workspace: Workspace | None = None,
+        *,
+        sandbox_session_id: str | None = None,
     ) -> Any:
         try:
             from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -67,6 +70,7 @@ class CodingToolServerFactory:
                         {"path": args["path"]},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(f"Read {args['path']}.", payload)
@@ -93,6 +97,7 @@ class CodingToolServerFactory:
                         },
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -119,6 +124,7 @@ class CodingToolServerFactory:
                         },
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(payload["message"], payload)
@@ -141,6 +147,7 @@ class CodingToolServerFactory:
                         {"pattern": args["pattern"]},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result("Workspace glob completed.", payload)
@@ -166,6 +173,7 @@ class CodingToolServerFactory:
                         },
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result("Workspace grep completed.", payload)
@@ -192,6 +200,7 @@ class CodingToolServerFactory:
                         },
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(
@@ -222,6 +231,7 @@ class CodingToolServerFactory:
                         {"branch_name": args["branch_name"]},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(
@@ -247,6 +257,7 @@ class CodingToolServerFactory:
                         {"branch_name": args["branch_name"]},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(
@@ -268,6 +279,7 @@ class CodingToolServerFactory:
                         {},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
@@ -286,6 +298,7 @@ class CodingToolServerFactory:
                         {},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(payload["summary"], {"output": payload["summary"]})
@@ -306,10 +319,11 @@ class CodingToolServerFactory:
                     emit,
                     "run_python_unittest",
                     {"start_directory": args["start_directory"]},
-                    task_attempt_id=task_attempt_id,
-                    workspace_path=workspace_path,
-                    allow_tool_error=True,
-                )
+                        task_attempt_id=task_attempt_id,
+                        workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
+                        allow_tool_error=True,
+                    )
                 payload = self._data(envelope)
                 tool_payload = {
                     "command": payload["command"],
@@ -338,6 +352,7 @@ class CodingToolServerFactory:
                         {"commit_message": args["commit_message"]},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result("Git commit created.", {"output": payload["summary"]})
@@ -360,6 +375,7 @@ class CodingToolServerFactory:
                         {},
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result("Git branch pushed.", {"output": payload["summary"]})
@@ -386,6 +402,7 @@ class CodingToolServerFactory:
                         },
                         task_attempt_id=task_attempt_id,
                         workspace_path=workspace_path,
+                        sandbox_session_id=sandbox_session_id,
                     )
                 )
                 return self._result(
@@ -426,8 +443,14 @@ class CodingToolServerFactory:
         *,
         task_attempt_id: str,
         workspace_path: str | None = None,
+        sandbox_session_id: str | None = None,
         allow_tool_error: bool = False,
     ) -> ToolExecutionEnvelope:
+        policy = resolve_runtime_policy(
+            tool_name,
+            args,
+            task_sandbox_available=bool(sandbox_session_id),
+        )
         tool_call_id = await self.store.create_tool_call(
             run_id=run_id,
             task_id=task.id,
@@ -443,6 +466,13 @@ class CodingToolServerFactory:
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "input": args,
+                "runtime_policy": policy.policy,
+                "policy_reason": policy.reason,
+                "sandbox_session_id": (
+                    sandbox_session_id
+                    if policy.policy == "task_attempt_sandbox"
+                    else None
+                ),
             },
         )
         if requires_human_approval(tool_name):
@@ -493,7 +523,11 @@ class CodingToolServerFactory:
                 tool_name=tool_name,
                 args=args,
                 tool_call_id=tool_call_id,
+                task_attempt_id=task_attempt_id,
                 workspace_path=workspace_path,
+                sandbox_session_id=sandbox_session_id,
+                runtime_policy=policy.policy,
+                policy_reason=policy.reason,
             )
         except (SandboxLayerError, GitHubBrokerError):
             await self.store.update_tool_call(
@@ -623,22 +657,38 @@ class CodingToolServerFactory:
         tool_name: str,
         args: dict[str, Any],
         tool_call_id: str,
+        task_attempt_id: str | None = None,
         workspace_path: str | None = None,
+        sandbox_session_id: str | None = None,
+        runtime_policy: str | None = None,
+        policy_reason: str | None = None,
     ) -> ToolExecutionEnvelope:
-        if tool_name in TRUSTED_GITHUB_TOOLS:
+        if runtime_policy == "broker_only" or tool_name in TRUSTED_GITHUB_TOOLS:
             return await self.github_broker.execute_tool(
                 run_id,
                 tool_name,
                 args,
                 tool_call_id=tool_call_id,
+                task_attempt_id=task_attempt_id,
                 workspace_path=workspace_path,
+                runtime_policy=runtime_policy,
+                policy_reason=policy_reason,
             )
         return await self.sandbox.execute_tool(
             run_id,
             tool_name,
             args,
             tool_call_id=tool_call_id,
+            task_attempt_id=task_attempt_id,
             workspace_path=workspace_path,
+            sandbox_session_id=(
+                sandbox_session_id
+                if runtime_policy == "task_attempt_sandbox"
+                else None
+            ),
+            sandbox_scope="task_attempt",
+            runtime_policy=runtime_policy,
+            policy_reason=policy_reason,
         )
 
     @staticmethod

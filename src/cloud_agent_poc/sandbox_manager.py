@@ -12,8 +12,12 @@ from uuid import uuid4
 import httpx
 
 from .config import Settings
-from .sandbox_protocol import SandboxRuntimeMetadata, ToolExecutionEnvelope
-from .sandbox_protocol import ToolExecutionRequest
+from .sandbox_protocol import (
+    SandboxRuntimeMetadata,
+    SandboxSessionCreateRequest,
+    ToolExecutionEnvelope,
+    ToolExecutionRequest,
+)
 from .sandbox_runtime import execute_runtime_request
 
 
@@ -28,6 +32,28 @@ class ToolExecutionRunner:
         *,
         workspace_path: Path,
     ) -> ToolExecutionEnvelope:
+        raise NotImplementedError
+
+
+class SandboxSessionRunner:
+    async def create_session(
+        self,
+        request: SandboxSessionCreateRequest,
+        *,
+        workspace_path: Path,
+    ) -> dict[str, object]:
+        raise NotImplementedError
+
+    async def execute(
+        self,
+        session_id: str,
+        request: ToolExecutionRequest,
+        *,
+        workspace_path: Path,
+    ) -> ToolExecutionEnvelope:
+        raise NotImplementedError
+
+    async def close_session(self, session_id: str) -> dict[str, object]:
         raise NotImplementedError
 
 
@@ -51,6 +77,64 @@ class DirectToolExecutionRunner(ToolExecutionRunner):
         envelope.runtime.type = "direct"
         envelope.runtime.pod_phase = "Direct"
         return envelope
+
+
+class DirectSandboxSessionRunner(SandboxSessionRunner):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def create_session(
+        self,
+        request: SandboxSessionCreateRequest,
+        *,
+        workspace_path: Path,
+    ) -> dict[str, object]:
+        session_id = request.sandbox_session_id or f"sbxsess_{uuid4().hex}"
+        return {
+            "sandbox_session_id": session_id,
+            "run_id": request.run_id,
+            "task_id": request.task_id,
+            "task_attempt_id": request.task_attempt_id,
+            "scope": request.scope,
+            "status": "running",
+            "runtime_profile": "direct",
+            "pod_name": None,
+            "workspace_path": str(workspace_path),
+        }
+
+    async def execute(
+        self,
+        session_id: str,
+        request: ToolExecutionRequest,
+        *,
+        workspace_path: Path,
+    ) -> ToolExecutionEnvelope:
+        started = time.monotonic()
+        request = request.model_copy(
+            update={
+                "sandbox_session_id": session_id,
+                "sandbox_scope": request.sandbox_scope or "task_attempt",
+                "workspace_path": str(workspace_path),
+            }
+        )
+        envelope = await execute_runtime_request(
+            request,
+            settings=self.settings,
+            workspace_path=workspace_path,
+        )
+        envelope.runtime.duration_ms = _duration_ms(started)
+        envelope.runtime.type = "direct_task_attempt_sandbox"
+        envelope.runtime.runtime_profile = "direct"
+        envelope.runtime.isolation = "process"
+        envelope.runtime.pod_phase = "Direct"
+        envelope.runtime.sandbox_session_id = session_id
+        envelope.runtime.sandbox_scope = request.sandbox_scope
+        envelope.runtime.runtime_policy = request.runtime_policy
+        envelope.runtime.policy_reason = request.policy_reason
+        return envelope
+
+    async def close_session(self, session_id: str) -> dict[str, object]:
+        return {"sandbox_session_id": session_id, "status": "closed"}
 
 
 class KubernetesToolPodRunner(ToolExecutionRunner):
@@ -90,6 +174,10 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                             "type": "sandbox_pod",
                             "runtime_profile": "kubernetes_container",
                             "isolation": "container",
+                            "sandbox_session_id": request.sandbox_session_id,
+                            "sandbox_scope": request.sandbox_scope,
+                            "runtime_policy": request.runtime_policy,
+                            "policy_reason": request.policy_reason,
                             "pod_name": pod_name,
                             "pod_phase": phase,
                             "exit_code": exit_code,
@@ -113,6 +201,10 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
                             type="sandbox_pod",
                             runtime_profile="kubernetes_container",
                             isolation="container",
+                            sandbox_session_id=request.sandbox_session_id,
+                            sandbox_scope=request.sandbox_scope,
+                            runtime_policy=request.runtime_policy,
+                            policy_reason=request.policy_reason,
                             pod_name=pod_name,
                             pod_phase="Unknown",
                             duration_ms=duration_ms,
@@ -197,6 +289,18 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
             {"name": "SANDBOX_WORKSPACE_PATH", "value": workspace_mount_path},
             {"name": "GIT_AUTHOR_NAME", "value": self.settings.git_author_name},
             {"name": "GIT_AUTHOR_EMAIL", "value": self.settings.git_author_email},
+            {
+                "name": "SANDBOX_TOOL_OUTPUT_BYTES_LIMIT",
+                "value": str(self.settings.sandbox_tool_output_bytes_limit),
+            },
+            {
+                "name": "SANDBOX_WORKSPACE_BYTES_LIMIT",
+                "value": str(self.settings.sandbox_workspace_bytes_limit),
+            },
+            {
+                "name": "SANDBOX_WORKSPACE_FILE_LIMIT",
+                "value": str(self.settings.sandbox_workspace_file_limit),
+            },
         ]
         return {
             "apiVersion": "v1",
@@ -308,11 +412,369 @@ class KubernetesToolPodRunner(ToolExecutionRunner):
         )
 
 
+class KubernetesTaskSandboxSessionRunner(SandboxSessionRunner):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.namespace = _service_account_namespace()
+        self.api_server = _kubernetes_api_server()
+        self.token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+        self.ca_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+
+    async def create_session(
+        self,
+        request: SandboxSessionCreateRequest,
+        *,
+        workspace_path: Path,
+    ) -> dict[str, object]:
+        session_id = request.sandbox_session_id or f"sbxsess_{uuid4().hex}"
+        request = request.model_copy(
+            update={
+                "sandbox_session_id": session_id,
+                "workspace_path": str(workspace_path),
+            }
+        )
+        pod_name = _pod_name_for_session(session_id)
+        async with self._client() as client:
+            await self._create_pod(client, pod_name, request)
+            pod = await self._wait_for_ready_pod(client, pod_name)
+        return {
+            "sandbox_session_id": session_id,
+            "run_id": request.run_id,
+            "task_id": request.task_id,
+            "task_attempt_id": request.task_attempt_id,
+            "scope": request.scope,
+            "status": "running",
+            "runtime_profile": "kubernetes_task_attempt_container",
+            "pod_name": pod_name,
+            "workspace_path": str(workspace_path),
+            "pod_ip": pod.get("status", {}).get("podIP"),
+        }
+
+    async def execute(
+        self,
+        session_id: str,
+        request: ToolExecutionRequest,
+        *,
+        workspace_path: Path,
+    ) -> ToolExecutionEnvelope:
+        execution_id = request.execution_id or f"sbxexec_{uuid4().hex}"
+        request = request.model_copy(
+            update={
+                "execution_id": execution_id,
+                "workspace_path": str(workspace_path),
+                "sandbox_session_id": session_id,
+                "sandbox_scope": request.sandbox_scope or "task_attempt",
+            }
+        )
+        pod_name = _pod_name_for_session(session_id)
+        started = time.monotonic()
+        async with self._client() as client:
+            try:
+                pod = await self._get_pod(client, pod_name)
+                pod_ip = pod.get("status", {}).get("podIP")
+                if not pod_ip:
+                    raise SandboxManagerError(
+                        f"Sandbox session Pod {pod_name} has no pod IP."
+                    )
+                envelope = await self._post_tool_request(pod_ip, request)
+                runtime = envelope.runtime.model_copy(
+                    update={
+                        "type": "sandbox_session_pod",
+                        "runtime_profile": "kubernetes_task_attempt_container",
+                        "isolation": "container",
+                        "sandbox_session_id": session_id,
+                        "sandbox_scope": request.sandbox_scope,
+                        "runtime_policy": request.runtime_policy,
+                        "policy_reason": request.policy_reason,
+                        "pod_name": pod_name,
+                        "pod_phase": pod.get("status", {}).get("phase", "Unknown"),
+                        "duration_ms": _duration_ms(started),
+                        "network_policy": (
+                            self.settings.sandbox_session_network_policy_name
+                        ),
+                        "egress_policy": self.settings.sandbox_egress_policy,
+                        "resource_limits": self._resource_limits(),
+                        "workspace": _workspace_evidence(workspace_path),
+                    }
+                )
+                envelope.runtime = runtime
+                return envelope
+            except SandboxManagerError as exc:
+                duration_ms = _duration_ms(started)
+                return _runtime_failure_envelope(
+                    request,
+                    pod_name=pod_name,
+                    failure_message=str(exc),
+                    duration_ms=duration_ms,
+                    runtime_metadata=SandboxRuntimeMetadata(
+                        type="sandbox_session_pod",
+                        runtime_profile="kubernetes_task_attempt_container",
+                        isolation="container",
+                        sandbox_session_id=session_id,
+                        sandbox_scope=request.sandbox_scope,
+                        runtime_policy=request.runtime_policy,
+                        policy_reason=request.policy_reason,
+                        pod_name=pod_name,
+                        pod_phase="Unknown",
+                        duration_ms=duration_ms,
+                        network_policy=(
+                            self.settings.sandbox_session_network_policy_name
+                        ),
+                        egress_policy=self.settings.sandbox_egress_policy,
+                        resource_limits=self._resource_limits(),
+                        workspace=_workspace_evidence(workspace_path),
+                    ),
+                )
+
+    async def close_session(self, session_id: str) -> dict[str, object]:
+        pod_name = _pod_name_for_session(session_id)
+        async with self._client() as client:
+            await self._delete_pod(client, pod_name)
+        return {"sandbox_session_id": session_id, "status": "closed", "pod_name": pod_name}
+
+    async def _create_pod(
+        self,
+        client: httpx.AsyncClient,
+        pod_name: str,
+        request: SandboxSessionCreateRequest,
+    ) -> None:
+        response = await client.post(
+            f"/api/v1/namespaces/{self.namespace}/pods",
+            json=self._pod_manifest(pod_name, request),
+        )
+        if not response.is_success:
+            raise SandboxManagerError(
+                f"Sandbox session Pod creation failed with HTTP {response.status_code}: "
+                f"{_response_detail(response)}"
+            )
+
+    async def _wait_for_ready_pod(
+        self,
+        client: httpx.AsyncClient,
+        pod_name: str,
+    ) -> dict:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            pod = await self._get_pod(client, pod_name)
+            phase = pod.get("status", {}).get("phase")
+            if phase == "Running" and pod.get("status", {}).get("podIP"):
+                if _pod_ready(pod):
+                    return pod
+            if phase in {"Succeeded", "Failed"}:
+                raise SandboxManagerError(
+                    f"Sandbox session Pod ended before it was ready: {phase}."
+                )
+            await asyncio.sleep(0.5)
+        raise SandboxManagerError("Sandbox session Pod timed out before readiness.")
+
+    async def _get_pod(self, client: httpx.AsyncClient, pod_name: str) -> dict:
+        response = await client.get(
+            f"/api/v1/namespaces/{self.namespace}/pods/{pod_name}"
+        )
+        if not response.is_success:
+            raise SandboxManagerError(
+                f"Sandbox session Pod lookup failed with HTTP {response.status_code}: "
+                f"{_response_detail(response)}"
+            )
+        return response.json()
+
+    async def _post_tool_request(
+        self,
+        pod_ip: str,
+        request: ToolExecutionRequest,
+    ) -> ToolExecutionEnvelope:
+        async with httpx.AsyncClient(
+            base_url=f"http://{pod_ip}:8080",
+            timeout=self.settings.sandbox_tool_timeout_seconds + 15,
+        ) as client:
+            response = await client.post(
+                "/execute",
+                json=request.model_dump(mode="json"),
+            )
+        if not response.is_success:
+            raise SandboxManagerError(
+                f"Sandbox session runtime failed with HTTP {response.status_code}: "
+                f"{_response_detail(response)}"
+            )
+        return ToolExecutionEnvelope.model_validate(response.json())
+
+    async def _delete_pod(self, client: httpx.AsyncClient, pod_name: str) -> None:
+        response = await client.delete(
+            f"/api/v1/namespaces/{self.namespace}/pods/{pod_name}",
+            params={"gracePeriodSeconds": "0"},
+        )
+        if response.status_code not in {200, 202, 404}:
+            raise SandboxManagerError(
+                f"Sandbox session Pod cleanup failed with HTTP {response.status_code}: "
+                f"{_response_detail(response)}"
+            )
+
+    def _pod_manifest(
+        self,
+        pod_name: str,
+        request: SandboxSessionCreateRequest,
+    ) -> dict:
+        workspace_mount_path = f"/workspace/{request.run_id}"
+        workspace_sub_path = self._workspace_volume_sub_path(request)
+        env: list[dict] = [
+            {"name": "SANDBOX_WORKSPACE_PATH", "value": workspace_mount_path},
+            {"name": "GIT_AUTHOR_NAME", "value": self.settings.git_author_name},
+            {"name": "GIT_AUTHOR_EMAIL", "value": self.settings.git_author_email},
+            {
+                "name": "SANDBOX_TOOL_OUTPUT_BYTES_LIMIT",
+                "value": str(self.settings.sandbox_tool_output_bytes_limit),
+            },
+            {
+                "name": "SANDBOX_WORKSPACE_BYTES_LIMIT",
+                "value": str(self.settings.sandbox_workspace_bytes_limit),
+            },
+            {
+                "name": "SANDBOX_WORKSPACE_FILE_LIMIT",
+                "value": str(self.settings.sandbox_workspace_file_limit),
+            },
+        ]
+        return {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": pod_name,
+                "labels": {
+                    "app": "cloud-agent-task-sandbox",
+                    "cloud-agent-run-id": request.run_id,
+                    "cloud-agent-task-attempt-id": request.task_attempt_id,
+                    "cloud-agent-sandbox-session-id": (
+                        request.sandbox_session_id or ""
+                    ),
+                },
+            },
+            "spec": {
+                "restartPolicy": "Never",
+                "automountServiceAccountToken": False,
+                "activeDeadlineSeconds": (
+                    self.settings.sandbox_session_timeout_seconds
+                ),
+                "containers": [
+                    {
+                        "name": "task-runtime",
+                        "image": self.settings.sandbox_runtime_image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "command": [
+                            "uvicorn",
+                            "cloud_agent_poc.sandbox_daemon:app",
+                            "--host",
+                            "0.0.0.0",
+                            "--port",
+                            "8080",
+                        ],
+                        "env": env,
+                        "ports": [{"containerPort": 8080}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/healthz", "port": 8080},
+                            "periodSeconds": 2,
+                            "failureThreshold": 15,
+                        },
+                        "securityContext": {
+                            "runAsNonRoot": True,
+                            "runAsUser": 10001,
+                            "runAsGroup": 10001,
+                            "allowPrivilegeEscalation": False,
+                            "capabilities": {"drop": ["ALL"]},
+                            "seccompProfile": {"type": "RuntimeDefault"},
+                        },
+                        "resources": {
+                            "requests": {
+                                "cpu": "100m",
+                                "memory": "128Mi",
+                                "ephemeral-storage": (
+                                    self.settings.sandbox_ephemeral_storage_request
+                                ),
+                            },
+                            "limits": {
+                                "cpu": "500m",
+                                "memory": "512Mi",
+                                "ephemeral-storage": (
+                                    self.settings.sandbox_ephemeral_storage_limit
+                                ),
+                            },
+                        },
+                        "volumeMounts": [
+                            {
+                                "name": "workspace",
+                                "mountPath": workspace_mount_path,
+                                "subPath": workspace_sub_path,
+                            },
+                            {"name": "tmp", "mountPath": "/tmp"},
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "workspace",
+                        "persistentVolumeClaim": {
+                            "claimName": self.settings.sandbox_workspace_claim
+                        },
+                    },
+                    {"name": "tmp", "emptyDir": {}},
+                ],
+            },
+        }
+
+    def _workspace_volume_sub_path(
+        self,
+        request: SandboxSessionCreateRequest,
+    ) -> str:
+        workspace_path = (
+            Path(request.workspace_path)
+            if request.workspace_path
+            else self.settings.workspace_root / request.run_id
+        ).resolve()
+        workspace_root = self.settings.workspace_root.resolve()
+        try:
+            relative_path = workspace_path.relative_to(workspace_root)
+        except ValueError as exc:
+            raise SandboxManagerError("Workspace path escaped sandbox root.") from exc
+        if not relative_path.parts:
+            raise SandboxManagerError("Workspace path must point to a run workspace.")
+        return relative_path.as_posix()
+
+    def _resource_limits(self) -> dict[str, object]:
+        return {
+            "cpu": "500m",
+            "memory": "512Mi",
+            "ephemeral_storage": self.settings.sandbox_ephemeral_storage_limit,
+            "timeout_seconds": self.settings.sandbox_tool_timeout_seconds,
+            "session_timeout_seconds": self.settings.sandbox_session_timeout_seconds,
+            "tool_output_bytes": self.settings.sandbox_tool_output_bytes_limit,
+            "runtime_log_bytes": self.settings.sandbox_runtime_log_bytes_limit,
+            "workspace_bytes": self.settings.sandbox_workspace_bytes_limit,
+            "workspace_files": self.settings.sandbox_workspace_file_limit,
+        }
+
+    def _client(self) -> httpx.AsyncClient:
+        token = self.token_path.read_text(encoding="utf-8").strip()
+        return httpx.AsyncClient(
+            base_url=self.api_server,
+            headers={"Authorization": f"Bearer {token}"},
+            verify=str(self.ca_path),
+            timeout=30,
+        )
+
+
 def create_tool_execution_runner(settings: Settings) -> ToolExecutionRunner:
     if settings.sandbox_execution_mode == "kubernetes":
         return KubernetesToolPodRunner(settings)
     if settings.sandbox_execution_mode == "direct":
         return DirectToolExecutionRunner(settings)
+    raise SandboxManagerError(
+        f"Unsupported SANDBOX_EXECUTION_MODE: {settings.sandbox_execution_mode}"
+    )
+
+
+def create_sandbox_session_runner(settings: Settings) -> SandboxSessionRunner:
+    if settings.sandbox_execution_mode == "kubernetes":
+        return KubernetesTaskSandboxSessionRunner(settings)
+    if settings.sandbox_execution_mode == "direct":
+        return DirectSandboxSessionRunner(settings)
     raise SandboxManagerError(
         f"Unsupported SANDBOX_EXECUTION_MODE: {settings.sandbox_execution_mode}"
     )
@@ -357,6 +819,10 @@ def _runtime_failure_envelope(
             type="sandbox_pod",
             runtime_profile="kubernetes_container",
             isolation="container",
+            sandbox_session_id=request.sandbox_session_id,
+            sandbox_scope=request.sandbox_scope,
+            runtime_policy=request.runtime_policy,
+            policy_reason=request.policy_reason,
             pod_name=pod_name,
             pod_phase="Unknown",
             duration_ms=duration_ms,
@@ -398,6 +864,24 @@ def _pod_name_for_execution(execution_id: str) -> str:
         suffix = uuid4().hex
     suffix = suffix[:20].strip("-.") or uuid4().hex[:20]
     return f"sandbox-tool-{suffix}"
+
+
+def _pod_name_for_session(session_id: str) -> str:
+    suffix = session_id.removeprefix("sbxsess_").lower()
+    suffix = re.sub(r"[^a-z0-9.-]+", "-", suffix).strip("-.")
+    if not suffix:
+        suffix = uuid4().hex
+    suffix = suffix[:20].strip("-.") or uuid4().hex[:20]
+    return f"sandbox-task-{suffix}"
+
+
+def _pod_ready(pod: dict) -> bool:
+    conditions = pod.get("status", {}).get("conditions") or []
+    for condition in conditions:
+        if condition.get("type") == "Ready":
+            return condition.get("status") == "True"
+    statuses = pod.get("status", {}).get("containerStatuses") or []
+    return bool(statuses) and all(status.get("ready") for status in statuses)
 
 
 def _workspace_evidence(workspace_path: Path) -> dict[str, object]:

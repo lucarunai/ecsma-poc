@@ -60,6 +60,7 @@ class ClaudeCodingAgent:
         task: TaskRecord,
         task_attempt_id: str,
         workspace: Workspace | None = None,
+        sandbox_session_id: str | None = None,
         handoffs: list[dict[str, Any]] | None = None,
         run_acceptance_criteria: list[dict[str, Any]] | None = None,
         recovery_context: str | None = None,
@@ -91,6 +92,7 @@ class ClaudeCodingAgent:
                     task_attempt_id,
                     emit,
                     workspace,
+                    sandbox_session_id=sandbox_session_id,
                 )
             },
             strict_mcp_config=True,

@@ -35,6 +35,7 @@ async def execute_runtime_request(
             tool_result=tool_result,
             runtime=_runtime_metadata(
                 settings=settings,
+                request=request,
                 workspace_path=workspace_path,
                 execution_mode=settings.sandbox_execution_mode,
                 tool_result=tool_result,
@@ -50,6 +51,7 @@ async def execute_runtime_request(
             failure_message=str(exc),
             runtime=_runtime_metadata(
                 settings=settings,
+                request=request,
                 workspace_path=workspace_path,
                 execution_mode=settings.sandbox_execution_mode,
                 tool_result=None,
@@ -80,6 +82,7 @@ def _request_from_env() -> ToolExecutionRequest:
 def _runtime_metadata(
     *,
     settings: Settings,
+    request: ToolExecutionRequest,
     workspace_path: Path,
     execution_mode: str,
     tool_result,
@@ -90,6 +93,10 @@ def _runtime_metadata(
         type=execution_mode,
         runtime_profile=_runtime_profile(execution_mode),
         isolation=_isolation_level(execution_mode),
+        sandbox_session_id=request.sandbox_session_id,
+        sandbox_scope=request.sandbox_scope,
+        runtime_policy=request.runtime_policy,
+        policy_reason=request.policy_reason,
         network_policy=(
             settings.sandbox_network_policy_name
             if execution_mode == "kubernetes"

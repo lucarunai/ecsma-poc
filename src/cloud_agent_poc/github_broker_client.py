@@ -22,7 +22,10 @@ class GitHubBrokerClient:
         args: dict[str, Any],
         *,
         tool_call_id: str,
+        task_attempt_id: str | None = None,
         workspace_path: str | None = None,
+        runtime_policy: str | None = None,
+        policy_reason: str | None = None,
     ) -> ToolExecutionEnvelope:
         payload = await self._request(
             "POST",
@@ -32,7 +35,10 @@ class GitHubBrokerClient:
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "args": args,
+                "task_attempt_id": task_attempt_id,
                 "workspace_path": workspace_path,
+                "runtime_policy": runtime_policy,
+                "policy_reason": policy_reason,
             },
         )
         return ToolExecutionEnvelope.model_validate(payload)

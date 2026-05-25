@@ -27,7 +27,9 @@ class Settings:
     sandbox_ephemeral_storage_request: str = "128Mi"
     sandbox_ephemeral_storage_limit: str = "1Gi"
     sandbox_network_policy_name: str = "sandbox-tool-default-deny"
+    sandbox_session_network_policy_name: str = "sandbox-session-default-deny"
     sandbox_egress_policy: str = "default-deny"
+    sandbox_session_timeout_seconds: int = 900
     sandbox_tool_output_bytes_limit: int = 4000
     sandbox_runtime_log_bytes_limit: int = 65536
     sandbox_workspace_bytes_limit: int = 104_857_600
@@ -95,9 +97,16 @@ class Settings:
                 "SANDBOX_NETWORK_POLICY_NAME",
                 "sandbox-tool-default-deny",
             ),
+            sandbox_session_network_policy_name=os.getenv(
+                "SANDBOX_SESSION_NETWORK_POLICY_NAME",
+                "sandbox-session-default-deny",
+            ),
             sandbox_egress_policy=os.getenv(
                 "SANDBOX_EGRESS_POLICY",
                 "default-deny",
+            ),
+            sandbox_session_timeout_seconds=int(
+                os.getenv("SANDBOX_SESSION_TIMEOUT_SECONDS", "900")
             ),
             sandbox_tool_output_bytes_limit=int(
                 os.getenv("SANDBOX_TOOL_OUTPUT_BYTES_LIMIT", "4000")

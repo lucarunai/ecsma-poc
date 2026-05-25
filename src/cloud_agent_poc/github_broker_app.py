@@ -57,6 +57,8 @@ async def execute_tool(request: ToolExecutionRequest) -> ToolExecutionEnvelope:
         failure_message=failure_message,
         runtime=SandboxRuntimeMetadata(
             type="trusted_github_executor",
+            runtime_policy=request.runtime_policy,
+            policy_reason=request.policy_reason,
             duration_ms=int((time.monotonic() - started) * 1000),
         ),
     )

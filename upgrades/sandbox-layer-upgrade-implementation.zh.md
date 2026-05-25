@@ -11,12 +11,13 @@
 - Phase 1A：Sandbox one-shot tool Pod NetworkPolicy default deny。
 - Phase 1B：Sandbox one-shot tool Pod resource / output / workspace 基础治理。
 - Phase 1C：Tool execution envelope 增加 runtime/profile/resource/workspace evidence。
+- Phase 3A：引入 task-attempt scoped Sandbox Session，普通 workspace tools 复用同一个 task sandbox；per-tool one-shot sandbox 保留为 clean-room override。
 
 尚未完成：
 
 - pids limit / inode quota：这类更适合通过 runtime/node policy 或更强 sandbox runtime 落地，当前暂不在 PoC 代码里硬做。
 - Phase 2：RuntimeClass 支持 gVisor / Kata，当前明确暂不实现，只保留在后续路线图。
-- Phase 3：Sandbox Session Pool / per-task sandbox。
+- Phase 3B：Sandbox Session Pool、预热池、跨 task 复用策略。
 - Phase 4：Workspace backend 抽象。
 - Phase 5：Firecracker / microVM Runner。
 - Phase 6：Wasm Runner。
@@ -525,7 +526,211 @@ scripts/k8s-security-verify-v2.sh
 
 - 生成的 one-shot Pod manifest 带 `ephemeral-storage` request/limit。
 
-## 5. 当前验证结果
+## 5. Phase 3A：Task-Attempt Scoped Sandbox Session
+
+### 5.1 目标
+
+此前系统是每个 tool call 创建一个 one-shot Sandbox Pod。这种方式隔离强、语义简单，但对连续 workspace 操作比较浪费：
+
+- 同一个 task 内的 read/write/edit/glob/grep/test/git status 会反复创建 Pod。
+- 每次 tool execution 都要经历 Pod 创建、调度、启动、删除。
+- tool 之间虽然共享 PVC workspace，但不共享 runtime process，无法表达“这一次 agent query 的 sandbox 会话”。
+
+本次实现把默认粒度调整为：
+
+```text
+run -> tasks -> task_attempt -> sandbox_session -> many workspace tool executions
+```
+
+注意这里使用的是 `task_attempt` 粒度，而不是纯 task 粒度。原因是系统恢复时每次 fresh Claude query 都会创建新的 `task_attempt`，新的 attempt 应该有新的 sandbox runtime 边界；历史 attempt 的状态只通过 DB、handoff、workspace 和 recovery context 恢复。
+
+### 5.2 Runtime Policy
+
+新增 runtime policy resolver：
+
+```text
+src/cloud_agent_poc/tool_policy.py
+```
+
+当前支持三类 policy：
+
+| policy | 用途 |
+| --- | --- |
+| `task_attempt_sandbox` | 默认 workspace tool policy，同一个 task attempt 内复用一个 sandbox session |
+| `tool_execution_sandbox` | clean-room / fallback policy，每个 tool call 独立 one-shot Pod |
+| `broker_only` | trusted GitHub tools，进入 GitHub Broker，由 Broker 持有 GitHub secret |
+
+关键规则：
+
+- GitHub trusted tools 永远走 `broker_only`，Agent 不能降级。
+- 普通 workspace tools 默认走 `task_attempt_sandbox`。
+- Agent/tool input 可以请求更强隔离，例如 `clean_room=true`，此时走 `tool_execution_sandbox`。
+- 如果 task sandbox session 不可用，workspace tool 自动 fallback 到 `tool_execution_sandbox`。
+
+这保持了 harness 控制权：Agent 可以要求更强隔离，但不能要求更弱隔离。
+
+### 5.3 Brain Layer 改动
+
+`RunOrchestrator._execute_model_task` 在每个 task attempt 开始时创建 sandbox session：
+
+```text
+src/cloud_agent_poc/brain/orchestrator.py
+```
+
+流程：
+
+1. `create_task_attempt` 创建 durable attempt。
+2. 调用 Sandbox Layer `POST /internal/sandbox-sessions` 创建 task sandbox runtime。
+3. 把 `sandbox_session_id` 传给 Claude SDK MCP tool server。
+4. tool router 根据 runtime policy 决定走 task sandbox、one-shot sandbox 或 GitHub Broker。
+5. task attempt 结束后关闭 sandbox session。
+6. 关闭成功/失败都写入 session event ledger。
+
+新增事件：
+
+- `sandbox.session.started`
+- `sandbox.session.closed`
+- `sandbox.session.close_failed`
+
+### 5.4 Session Layer / DB 改动
+
+新增表：
+
+```sql
+sandbox_sessions (
+  id,
+  run_id,
+  task_id,
+  task_attempt_id,
+  scope,
+  status,
+  runtime_profile,
+  pod_name,
+  workspace_path,
+  failure_kind,
+  failure_reason,
+  last_heartbeat_at,
+  expires_at,
+  closed_at,
+  created_at
+)
+```
+
+`tool_executions` 增加：
+
+```sql
+sandbox_session_id
+```
+
+来源是 tool execution envelope 的：
+
+```json
+{
+  "runtime": {
+    "sandbox_session_id": "sbxsess_...",
+    "sandbox_scope": "task_attempt",
+    "runtime_policy": "task_attempt_sandbox"
+  }
+}
+```
+
+这让后续 ops/support 可以回答：
+
+- 某个 task attempt 使用了哪个 sandbox session。
+- 某个 sandbox session 里执行了哪些 tool。
+- 哪些 tool 是 task sandbox，哪些 tool 是 one-shot clean-room。
+- Brain crash 时哪些 sandbox session 被标记为 abandoned。
+
+### 5.5 Sandbox Layer 改动
+
+新增 Sandbox Manager endpoints：
+
+```text
+POST   /internal/sandbox-sessions
+POST   /internal/sandbox-sessions/{session_id}/tool-executions
+DELETE /internal/sandbox-sessions/{session_id}
+```
+
+Kubernetes mode 新增 task sandbox session Pod：
+
+```text
+app=cloud-agent-task-sandbox
+command: uvicorn cloud_agent_poc.sandbox_daemon:app --host 0.0.0.0 --port 8080
+```
+
+Sandbox Manager 不使用 `pods/exec`。执行 tool 时通过 Pod IP 调用 task sandbox runtime：
+
+```text
+Sandbox Manager -> http://{pod_ip}:8080/execute
+```
+
+这样 RBAC 仍然保持最小化：
+
+```text
+pods create/get/delete
+pods/log get
+```
+
+不需要 `pods/exec`。
+
+task sandbox session Pod 继承 one-shot Pod 的基础安全边界：
+
+- `automountServiceAccountToken: false`
+- `runAsNonRoot: true`
+- `runAsUser: 10001`
+- `allowPrivilegeEscalation: false`
+- `capabilities.drop: ["ALL"]`
+- `seccompProfile: RuntimeDefault`
+- CPU / memory / ephemeral-storage requests and limits
+- workspace PVC user-scoped subPath mount
+- `/tmp` 使用 `emptyDir`
+
+### 5.6 NetworkPolicy
+
+新增 v2 NetworkPolicy：
+
+```text
+sandbox-session-default-deny
+```
+
+选择：
+
+```text
+app=cloud-agent-task-sandbox
+```
+
+默认包含 `Ingress` / `Egress` policy types，只显式允许 Sandbox Manager 访问 task sandbox daemon 的 8080 端口：
+
+```text
+cloud-agent-sandbox -> cloud-agent-task-sandbox:8080
+```
+
+task sandbox 默认不开放 egress。这符合当前模型：GitHub secret 和外部 GitHub 操作仍由 GitHub Broker 负责，workspace tools 不应该直接访问内网服务或公网。
+
+### 5.7 测试覆盖
+
+新增/更新测试：
+
+```text
+tests/test_tool_policy.py
+tests/test_sdk_tool_execution.py
+tests/test_sandbox_runtime.py
+tests/test_k8s_security_manifests.py
+```
+
+覆盖：
+
+- GitHub tools 解析为 `broker_only`。
+- workspace tools 默认解析为 `task_attempt_sandbox`。
+- task sandbox 不可用时 fallback 到 `tool_execution_sandbox`。
+- `clean_room=true` 强制 one-shot sandbox。
+- SDK tool router 会把 `sandbox_session_id` 和 runtime policy 写入 sandbox request / envelope。
+- task sandbox session Pod manifest 使用 daemon runtime。
+- task sandbox session Pod 不注入 GitHub / Anthropic secret。
+- task sandbox session Pod 使用 workspace subPath、securityContext、resources。
+- v2 manifest 声明 `sandbox-session-default-deny` NetworkPolicy。
+
+## 6. 当前验证结果
 
 Phase 1A / 1B / 1C 已执行本地测试：
 
@@ -539,7 +744,7 @@ PYTHONPATH=src python3 -m unittest discover -v
 结果：
 
 ```text
-97 tests OK
+113 tests OK
 ```
 
 已部署到 v2：
@@ -600,4 +805,4 @@ v2 runtime verification：
 }
 ```
 
-因此当前实际实现范围停在 Phase 1A / 1B / 1C。Phase 2 RuntimeClass / gVisor / Kata 后续再讨论，不进入本次改动。
+因此当前实际实现范围包含 Phase 1A / 1B / 1C 和 Phase 3A。Phase 2 RuntimeClass / gVisor / Kata、Phase 3B sandbox pool、Phase 4+ 后续再讨论，不进入本次改动。
